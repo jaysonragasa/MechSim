@@ -1,0 +1,23 @@
+{
+  "name": "mechsim",
+  "version": "0.2.0",
+  "description": "MechSim — 2D Parametric Kinematics Simulator for planar mechanical linkages (four-bar, slider-crank, robotic joints). Units in millimeters.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "kinematics",
+    "linkage",
+    "four-bar",
+    "slider-crank",
+    "mechanism",
+    "simulation"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "vite": "^5.4.10"
+  }
+}

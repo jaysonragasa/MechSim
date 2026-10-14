@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MechSim — 2D Parametric Kinematics Simulator</title>
+    <link rel="stylesheet" href="/styles/main.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-mark">◆</span>
+          <div>
+            <h1>MechSim</h1>
+            <p class="tagline">2D Parametric Kinematics Simulator · units: mm</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button id="btn-inspect-mode" class="hbtn" title="Where the inspector appears: beside the object, or docked to the side">Inspector: Beside</button>
+          <button id="btn-import" class="hbtn" title="Import a .mechsim file">Import</button>
+          <button id="btn-export" class="hbtn" title="Export the scene as .mechsim">Export</button>
+          <div id="status-bar" class="status-bar">
+            <span id="status-coords">x: 0.0 mm &nbsp; y: 0.0 mm</span>
+            <span id="status-zoom">zoom: 100%</span>
+          </div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <nav class="toolbar" aria-label="Tools">
+          <button class="tool-btn" data-tool="select" title="Select (V) — pick & move joints, links, bodies">
+            <span class="tool-ico">⬚</span><span class="tool-lbl">Select</span>
+          </button>
+          <button class="tool-btn" data-tool="joint" title="Joint (J) — click empty space to add a joint">
+            <span class="tool-ico">●</span><span class="tool-lbl">Joint</span>
+          </button>
+          <button class="tool-btn" data-tool="link" title="Link (L) — click joints to connect; multi-select links to make rigid">
+            <span class="tool-ico">／</span><span class="tool-lbl">Link</span>
+          </button>
+          <div class="tool-sep"></div>
+          <button id="btn-snap" class="tool-btn" title="Snap to grid (G) — snap joints to the grid step when adding or moving">
+            <span class="tool-ico">⌗</span><span class="tool-lbl">Snap</span>
+          </button>
+          <button id="btn-play" class="tool-btn" title="Play / Pause (Space)">
+            <span class="tool-ico" id="play-ico">▶</span><span class="tool-lbl" id="play-lbl">Play</span>
+          </button>
+          <button id="btn-info" class="tool-btn" title="Info — motor & link angles">
+            <span class="tool-ico">ⓘ</span><span class="tool-lbl">Info</span>
+          </button>
+        </nav>
+
+        <section class="canvas-wrap">
+          <canvas id="scene"></canvas>
+          <div id="floating-layer" class="floating-layer"></div>
+          <div id="dock-inspector" class="dock-inspector" hidden></div>
+          <div id="info-overlay" class="info-overlay" hidden></div>
+          <div class="canvas-hint" id="canvas-hint">
+            Select: click to pick · drag joints to move · right-click for options · Shift adds
+          </div>
+        </section>
+
+        <button id="panel-toggle" class="panel-toggle" title="Collapse / expand panel">⟩</button>
+        <aside id="control-panel" class="control-panel" aria-label="Controls"></aside>
+      </main>
+
+      <input id="file-input" type="file" accept=".mechsim,.json,application/json" hidden />
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
