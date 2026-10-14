@@ -6,12 +6,19 @@ let _autoId = 0;
  * A kinematic joint: a point in 2D space (millimeters) that links connect to.
  *
  * Mobility is expressed through `invMass` (inverse mass), consumed by the
- * constraint solver. A joint with invMass 0 is immovable during a solve:
- *   - `fixed`    : permanently grounded/anchored by the user
- *   - `driven`   : positioned by a motor/driver this frame
- *   - `dragging` : being dragged by the pointer this frame
+ * constraint solver:
+ *   - `fixed`    : grounded/anchored by the user  -> invMass 0 (immovable)
+ *   - `driven`   : positioned by a motor this frame -> invMass 0 (immovable)
+ *   - `dragging` : being dragged by the pointer -> a SMALL non-zero invMass
+ *   - otherwise  : invMass 1 (freely movable)
  *
- * This keeps the solver agnostic to *why* a joint is pinned (Dependency
+ * A dragged joint uses a small non-zero inverse mass rather than 0 on purpose:
+ * it still leads the pointer (movable neighbours absorb almost all of each
+ * link correction), but when a link's other end is immovable the dragged joint
+ * takes the full correction and is clamped to the link's length — so links
+ * swing on their arc instead of stretching past their length.
+ *
+ * This keeps the solver agnostic to *why* a joint is held (Dependency
  * Inversion: the solver depends only on the `invMass` abstraction).
  */
 export class Joint {
@@ -36,13 +43,22 @@ export class Joint {
     this.dragging = false;
   }
 
-  /** Inverse mass for the solver: 0 means immovable this frame. */
+  /** Inverse mass for the solver: 0 immovable, small while dragging, else 1. */
   get invMass() {
-    return (this.fixed || this.driven || this.dragging) ? 0 : 1;
+    if (this.fixed || this.driven) return 0;
+    if (this.dragging) return Joint.DRAG_INV_MASS;
+    return 1;
   }
 
-  /** True if the joint is held in place for any reason this frame. */
+  /** True if the joint is fully immovable this frame (grounded or driven). */
   get isPinned() {
-    return this.invMass === 0;
+    return this.fixed || this.driven;
   }
 }
+
+/**
+ * Inverse mass of a joint while it's being dragged. Small enough that the
+ * joint leads the pointer against movable neighbours, large enough that a link
+ * to an immovable neighbour clamps it to length instead of stretching.
+ */
+Joint.DRAG_INV_MASS = 0.02;
