@@ -22,6 +22,7 @@ const COLORS = {
   jointHover: '#ffb454',
   jointSelected: '#4ec9a1',
   motorArc: '#ffb45488',
+  motorArcMark: '#ffce88',
   text: '#e6edf3'
 };
 
@@ -168,17 +169,77 @@ export class CanvasRenderer extends IRenderer {
   _drawMotorArcs(drivers) {
     const ctx = this.ctx;
     for (const d of drivers) {
-      if (d.radius == null || !d.pivot) continue;
+      if (d.radius == null || !d.pivot || d.radius <= 0) continue;
       const center = this.camera.worldToScreen(d.pivot.position);
-      const r = this.camera.mmToPx(d.radius);
+      const rpx = this.camera.mmToPx(d.radius);
+      if (rpx < 2) continue;
+
+      // Unlimited motor: full dashed circle (its whole travel).
+      if (d.limitDegrees >= 360) {
+        ctx.strokeStyle = COLORS.motorArc;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 5]);
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, rpx, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        continue;
+      }
+
+      // Limited motor: draw only the reachable arc, from the zero reference
+      // through the travel limit (honoring invert). Sampled in world space so
+      // the Y-flip is handled by worldToScreen.
+      const dir = d.inverted ? -1 : 1;
+      const steps = Math.max(10, Math.ceil(d.limitDegrees / 4));
       ctx.strokeStyle = COLORS.motorArc;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([3, 5]);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.arc(center.x, center.y, r, 0, Math.PI * 2);
+      for (let i = 0; i <= steps; i++) {
+        const wa = d.zeroRad + dir * (i / steps) * d.limitRad;
+        const p = this.camera.worldToScreen(d.pivot.position.add(Vector2.fromAngle(wa, d.radius)));
+        if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      }
       ctx.stroke();
       ctx.setLineDash([]);
+
+      // Boundary markers: where 0° starts and where the limit ends.
+      this._drawMotorBoundary(d, d.zeroRad, '0°', true);
+      this._drawMotorBoundary(d, d.zeroRad + dir * d.limitRad, `${d.limitDegrees}°`, false);
     }
+  }
+
+  /** Radial tick + label at a motor travel boundary (zero or limit). */
+  _drawMotorBoundary(d, worldAngle, label, isStart) {
+    const ctx = this.ctx;
+    const at = (f) => this.camera.worldToScreen(d.pivot.position.add(Vector2.fromAngle(worldAngle, d.radius * f)));
+    const inner = at(0.86);
+    const outer = at(1.14);
+    const lab = at(1.26);
+
+    ctx.strokeStyle = COLORS.motorArcMark;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(inner.x, inner.y);
+    ctx.lineTo(outer.x, outer.y);
+    ctx.stroke();
+
+    if (isStart) {
+      const dot = at(1);
+      ctx.fillStyle = COLORS.motorArcMark;
+      ctx.beginPath();
+      ctx.arc(dot.x, dot.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(15, 19, 25, 0.8)';
+    ctx.strokeText(label, lab.x, lab.y);
+    ctx.fillStyle = COLORS.motorArcMark;
+    ctx.fillText(label, lab.x, lab.y);
   }
 
   // ---- Rigid bodies -------------------------------------------------------
