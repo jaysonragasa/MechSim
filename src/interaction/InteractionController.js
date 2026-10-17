@@ -36,6 +36,7 @@ export class InteractionController {
     this._pointers = new Map(); // pointerId -> px (Vector2)
     this._gesture = null;       // { dist, mid } while two fingers are down
     this._touchPan = false;     // one-finger drag on empty space (touch only)
+    this._pendingAdd = null;    // deferred joint-add world pos (touch only)
 
     this._bind();
   }
@@ -48,6 +49,7 @@ export class InteractionController {
     this._pointers.clear();
     this._gesture = null;
     this._touchPan = false;
+    this._pendingAdd = null;
   }
 
   /** Nearest finite-rail endpoint handle under the pointer, or null. */
@@ -88,6 +90,7 @@ export class InteractionController {
     }
     this._panning = false;
     this._touchPan = false;
+    this._pendingAdd = null; // a 2nd finger cancels a deferred joint add
   }
 
   _pointerPx(e) {
@@ -201,6 +204,13 @@ export class InteractionController {
 
     if (tool === 'joint') {
       const world = this.camera.screenToWorld(px);
+      if (e.pointerType === 'touch') {
+        // Defer the add to tap-up so a 2nd finger (pinch) cancels it instead
+        // of dropping a stray joint when you meant to zoom.
+        this._pendingAdd = world;
+        this.canvas.setPointerCapture?.(e.pointerId);
+        return;
+      }
       this.cb.onAddJoint?.(world);
       return;
     }
@@ -291,6 +301,12 @@ export class InteractionController {
     if (this._touchPan) {
       this._touchPan = false;
       if (!this._moved) this.cb.onSelect?.(null, {}); // a tap (no drag) deselects
+    }
+
+    if (this._pendingAdd) {
+      const world = this._pendingAdd;
+      this._pendingAdd = null;
+      if (!this._moved) this.cb.onAddJoint?.(world); // tap places the joint
     }
 
     if (this.draggingJoint) {
