@@ -62,7 +62,8 @@ export class App {
     this._dragJoint = null;      // joint currently being dragged
     this._pointerWorld = null;   // last pointer position (mm), for the rail draft
     this._fileName = 'scene';    // remembered export/import file name (no extension)
-    this.panelCollapsed = false;
+    this.panelCollapsed = this._loadPanelCollapsedPref();
+    this.appEl.classList.toggle('panel-collapsed', this.panelCollapsed);
     this.snap = this._loadSnapPref();
     this._motorConstraints = [];
 
@@ -118,6 +119,7 @@ export class App {
       onPanelToggle: () => this.togglePanel()
     });
     this.toolbar.setSnap(this.snap.enabled);
+    this.toolbar.setCollapsed(this.panelCollapsed);
 
     this.interaction = new InteractionController(
       { canvas: this.canvas, camera: this.camera, mechanism: this.mechanism },
@@ -333,10 +335,19 @@ export class App {
     try { localStorage.setItem('mechsim.snap', JSON.stringify(this.snap)); } catch { /* ignore */ }
   }
 
+  _loadPanelCollapsedPref() {
+    try { return localStorage.getItem('mechsim.panelCollapsed') === '1'; } catch { return false; }
+  }
+
+  _savePanelCollapsedPref() {
+    try { localStorage.setItem('mechsim.panelCollapsed', this.panelCollapsed ? '1' : '0'); } catch { /* ignore */ }
+  }
+
   togglePanel() {
     this.panelCollapsed = !this.panelCollapsed;
     this.appEl.classList.toggle('panel-collapsed', this.panelCollapsed);
     this.toolbar.setCollapsed(this.panelCollapsed);
+    this._savePanelCollapsedPref();
     // Canvas size changes; re-measure next frame (measure the container, not
     // the canvas — the canvas carries a fixed pixel width from the last resize).
     requestAnimationFrame(() => this._resizeToContainer());
