@@ -32,6 +32,11 @@ export class InteractionController {
     this.pickRadiusPx = 12;
     this.edgePickPx = 7;
 
+    // Multi-touch: track every active pointer so two fingers can pinch/pan.
+    this._pointers = new Map(); // pointerId -> px (Vector2)
+    this._gesture = null;       // { dist, mid } while two fingers are down
+    this._touchPan = false;     // one-finger drag on empty space (touch only)
+
     this._bind();
   }
 
@@ -40,6 +45,9 @@ export class InteractionController {
     this.hoveredItem = null;
     this.draggingJoint = null;
     this._draggingRail = null;
+    this._pointers.clear();
+    this._gesture = null;
+    this._touchPan = false;
   }
 
   /** Nearest finite-rail endpoint handle under the pointer, or null. */
@@ -55,12 +63,31 @@ export class InteractionController {
 
   _bind() {
     const c = this.canvas;
+    // Let the canvas own all touch gestures (no browser scroll/zoom stealing
+    // them), so pointer drags and pinch work; also stop long-press text select.
+    c.style.touchAction = 'none';
+    c.style.userSelect = 'none';
     c.addEventListener('pointerdown', (e) => this._onDown(e));
     c.addEventListener('pointermove', (e) => this._onMove(e));
     c.addEventListener('pointerleave', () => this._setHover(null));
     window.addEventListener('pointerup', (e) => this._onUp(e));
+    window.addEventListener('pointercancel', (e) => this._onUp(e));
     c.addEventListener('wheel', (e) => this._onWheel(e), { passive: false });
     c.addEventListener('contextmenu', (e) => this._onContext(e));
+  }
+
+  /** End any in-progress one-finger action (used when a 2nd finger lands). */
+  _endActivePointerAction() {
+    if (this.draggingJoint) {
+      this.draggingJoint = null;
+      this.cb.onDragEnd?.(this._moved); // commit the move so far, if any
+    }
+    if (this._draggingRail) {
+      this._draggingRail = null;
+      if (this._moved) this.cb.onRailEndCommit?.();
+    }
+    this._panning = false;
+    this._touchPan = false;
   }
 
   _pointerPx(e) {
@@ -120,6 +147,24 @@ export class InteractionController {
   _onDown(e) {
     if (e.button === 2) return; // right-click handled in contextmenu
     const px = this._pointerPx(e);
+    this._pointers.set(e.pointerId, px);
+
+    // A second finger starts a pinch-zoom / two-finger pan. Abandon whatever
+    // the first finger was doing and switch into gesture mode.
+    if (this._pointers.size === 2) {
+      this._endActivePointerAction();
+      const [a, b] = [...this._pointers.values()];
+      this._gesture = { dist: a.distanceTo(b), mid: a.lerp(b, 0.5) };
+      this.canvas.style.cursor = 'default';
+      return;
+    }
+    if (this._pointers.size > 2) return; // ignore 3rd+ fingers
+
+    // Fingers are less precise than a cursor — grow the hit targets for touch.
+    const touch = e.pointerType === 'touch';
+    this.pickRadiusPx = touch ? 22 : 12;
+    this.edgePickPx = touch ? 12 : 7;
+
     this._lastPointerPx = px;
     this._moved = false;
 
@@ -170,17 +215,39 @@ export class InteractionController {
       }
     }
 
+    // Touch: a one-finger drag on empty space pans the view. A tap that
+    // doesn't move still falls through to deselect (handled on pointer-up).
+    if (e.pointerType === 'touch' && tool === 'select' && !item) {
+      this._touchPan = true;
+      this.canvas.setPointerCapture?.(e.pointerId);
+      return;
+    }
+
     // select tool on a link/body, or empty
     this.cb.onSelect?.(item, { additive: e.shiftKey });
   }
 
   _onMove(e) {
     const px = this._pointerPx(e);
+    if (this._pointers.has(e.pointerId)) this._pointers.set(e.pointerId, px);
+
+    // Two fingers down: pinch to zoom (about the midpoint) and pan together.
+    if (this._gesture && this._pointers.size >= 2) {
+      const [a, b] = [...this._pointers.values()];
+      const dist = a.distanceTo(b);
+      const mid = a.lerp(b, 0.5);
+      if (this._gesture.dist > 0) this.camera.zoomAt(dist / this._gesture.dist, mid);
+      this.camera.panBy(mid.sub(this._gesture.mid));
+      this._gesture = { dist, mid };
+      this.cb.onChange?.();
+      return;
+    }
+
     const worldMm = this.camera.screenToWorld(px);
     this.cb.onPointerMove?.(worldMm);
     if (px.distanceTo(this._lastPointerPx) > 2) this._moved = true;
 
-    if (this._panning) {
+    if (this._panning || this._touchPan) {
       this.camera.panBy(px.sub(this._lastPointerPx));
       this._lastPointerPx = px;
       this.cb.onChange?.();
@@ -217,7 +284,15 @@ export class InteractionController {
       : 'crosshair';
   }
 
-  _onUp() {
+  _onUp(e) {
+    if (e && e.pointerId != null) this._pointers.delete(e.pointerId);
+    if (this._pointers.size < 2) this._gesture = null; // gesture needs two fingers
+
+    if (this._touchPan) {
+      this._touchPan = false;
+      if (!this._moved) this.cb.onSelect?.(null, {}); // a tap (no drag) deselects
+    }
+
     if (this.draggingJoint) {
       this.draggingJoint = null;
       this.cb.onDragEnd?.(this._moved); // always clean up; commit only if moved
