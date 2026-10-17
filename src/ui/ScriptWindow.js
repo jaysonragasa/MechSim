@@ -136,6 +136,9 @@ export class ScriptWindow {
   // ---- Drag / geometry -----------------------------------------------------
 
   _installDrag(handle) {
+    // Claim touch gestures on the title bar so a finger-drag moves the window
+    // instead of the browser treating it as a page scroll (which cancels it).
+    handle.style.touchAction = 'none';
     let sx = 0; let sy = 0; let ox = 0; let oy = 0; let dragging = false;
     handle.addEventListener('pointerdown', (e) => {
       if (e.target.closest('button, input, label')) return; // let controls work
