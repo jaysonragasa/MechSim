@@ -33,11 +33,13 @@ export class ScriptDriver extends Driver {
     this.error = null;
     this._fn = null;
     this._t = 0;
+    this._state = {}; // persistent per-run scratch exposed to scripts as `m.state`
     this.compile();
   }
 
   compile() {
     this.error = null;
+    this._state = {}; // recompiling (Apply / new script) starts with fresh state
     if (!this.source || !this.source.trim()) { this._fn = null; return; }
     try {
       // eslint-disable-next-line no-new-func
@@ -90,11 +92,23 @@ export class ScriptDriver extends Driver {
     return null;
   }
 
+  _findLink(name) {
+    for (const l of this.mechanism.links) {
+      if (l.name === name || l.id === name) return l;
+    }
+    return null;
+  }
+
   /** The control API handed to the script as `m`. */
   _api() {
     const self = this;
     return {
       t: this._t,
+
+      /** Persistent per-run scratch object: survives across frames so a script
+       *  can capture geometry once (e.g. `if (!m.state.ok) { ... }`). Cleared
+       *  when the script is re-applied. */
+      state: this._state,
 
       /** Handle for a motor by crank (or pivot) name: `m.motor('Hip').angle = 30`. */
       motor(name) {
@@ -137,6 +151,73 @@ export class ScriptDriver extends Driver {
       pos(name) {
         const j = self._findJoint(name);
         return j ? { x: j.position.x, y: j.position.y } : null;
+      },
+
+      /**
+       * Full joint properties (by name or id), including live x/y:
+       * `{ id, name, x, y, fixed, color }`. Returns null if not found.
+       */
+      getJoint(name) {
+        const j = self._findJoint(name);
+        if (!j) return null;
+        return {
+          id: j.id,
+          name: j.name,
+          x: j.position.x,
+          y: j.position.y,
+          fixed: j.fixed,
+          color: j.color ?? null
+        };
+      },
+
+      /**
+       * Full motor properties (addressed by crank or pivot, name or id),
+       * including the live measured `angle` in degrees. pivot/crank/reference
+       * are given as both ids and names so you don't have to map them.
+       * Returns null if no motor matches.
+       */
+      getMotor(name) {
+        const d = self._findMotor(name);
+        if (!d) return null;
+        return {
+          type: 'angle',
+          pivot: d.pivot ? d.pivot.id : null,
+          crank: d.crank ? d.crank.id : null,
+          reference: d.reference ? d.reference.id : null,
+          pivotName: d.pivot ? d.pivot.name : null,
+          crankName: d.crank ? d.crank.name : null,
+          referenceName: d.reference ? d.reference.name : null,
+          speed: d.speedDegPerSec,
+          inverted: d.inverted,
+          zeroDegrees: d.zeroDegrees,
+          limitDegrees: d.limitDegrees,
+          angle: d.measuredAngleDegrees()
+        };
+      },
+
+      /**
+       * Full link properties (by name or id): endpoint ids `a`/`b`, design
+       * `length`, live `currentLength`, and the live endpoint coordinates
+       * `ax,ay` (joint A) and `bx,by` (joint B). Returns null if not found.
+       */
+      getLink(name) {
+        const l = self._findLink(name);
+        if (!l) return null;
+        return {
+          id: l.id,
+          name: l.name,
+          a: l.jointA.id,
+          b: l.jointB.id,
+          aName: l.jointA.name,
+          bName: l.jointB.name,
+          length: l.length,
+          currentLength: l.currentLength,
+          color: l.color ?? null,
+          ax: l.jointA.position.x,
+          ay: l.jointA.position.y,
+          bx: l.jointB.position.x,
+          by: l.jointB.position.y
+        };
       }
     };
   }

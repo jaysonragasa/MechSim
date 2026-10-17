@@ -7,80 +7,85 @@ import { AngleDriver } from '../simulation/AngleDriver.js';
  * Walking gait for the serial 2-DOF leg. Traces a "D-shape" foot path: the
  * foot drags flat along the ground during stance, then lifts in a smooth
  * half-ellipse during swing. Analytic 2-link IK maps the foot target to the
- * hip (crank J20) and knee (crank Feet) servos. +X is forward (the `x = -x`
- * line faces the leg toward +X on screen).
+ * hip (crank J20) and knee (crank Feet) servos. Link lengths and each servo's
+ * zero/invert/limit are READ from the scene (m.getLink / m.getMotor), so only
+ * the gait shape is authored.
  */
 const LEG_SERIAL_GAIT = `// Serial 2-DOF leg · walking gait (D-shape foot path)
-// Base frame: Ground at (0,0). Femur = Tibia = 80mm. Foot home Y=-120.
-// +X = forward (head), -X = back. +Y = up (robotics Z).
+// Link lengths and servo zero/invert/limit are READ from the scene
+// (m.getLink / m.getMotor) — only the gait shape below is authored.
+// Base frame: the hip (Ground).  +X = forward, -X = back, +Y = up.
 
-const L1 = 80, L2 = 80;      // femur, tibia (mm)
-const Y0 = -120;             // ground line (foot home height)
-const X_FWD = 20, X_BACK = -20;     // stride: 20mm fwd / 20mm back of base
-const LIFT = 20;             // swing height (foot rises to Y=-100)
+// fit an angle (deg) into a servo's real travel by picking the best 360°-wrap
+const fit = (d, limit) => {
+  let best = d, bestDist = Infinity;
+  for (const c of [d - 360, d, d + 360]) {
+    const cl = Math.max(0, Math.min(limit, c));
+    const dist = Math.abs(c - cl);
+    if (dist < bestDist) { bestDist = dist; best = c; }
+  }
+  return best;
+};
+
+// ---- read the live scene --------------------------------------------------
+const femur = m.getLink('Femur');   // Ground -> J20
+const tibia = m.getLink('Tibia');   // J20 -> Feet
+const mh = m.getMotor('J20');       // hip  (crank J20)
+const mk = m.getMotor('Feet');      // knee (crank Feet, measured vs the femur)
+if (!(femur && tibia && mh && mk)) return; // scene not ready
+const L1 = femur.length, L2 = tibia.length; // femur, tibia (mm)
+
+// ---- foot path (D-shape), relative to the hip -----------------------------
+const Y0 = -120;             // neutral foot depth below the hip (mm)
+const X_FWD = 20, X_BACK = -20;     // stride: forward / back of base (mm)
+const LIFT = 20;             // swing lift height (mm)
 const PERIOD = 2.0;          // seconds per full stride
 const STANCE = 0.5;          // fraction of cycle on the ground
 
-const phase = (t % PERIOD) / PERIOD;      // 0..1
+const phase = (t % PERIOD) / PERIOD;
 let x, y;
-if (phase < STANCE) {
-  // STANCE: flat ground drag (foot planted), forward -> back
+if (phase < STANCE) {        // STANCE: flat ground drag (foot planted), fwd -> back
   const u = phase / STANCE;
   x = X_FWD + (X_BACK - X_FWD) * u;
   y = Y0;
-} else {
-  // SWING: half-ellipse, back -> forward, lifting up and over
+} else {                     // SWING: half-ellipse, back -> forward, lifting
   const v = (phase - STANCE) / (1 - STANCE);
   x = X_BACK + (X_FWD - X_BACK) * v;
   y = Y0 + LIFT * Math.sin(Math.PI * v);
 }
-
 x = -x; // face forward toward +X on screen
 
-// analytic 2-link inverse kinematics (elbow-down)
+// ---- analytic 2-link inverse kinematics (elbow-down) ----------------------
 const D = (x*x + y*y - L1*L1 - L2*L2) / (2 * L1 * L2);
 const Dc = Math.max(-1, Math.min(1, D));
-const q2 = -Math.acos(Dc);
+const q2 = -Math.acos(Dc);                               // knee (elbow) angle
 const q1 = Math.atan2(y, x) - Math.atan2(L2*Math.sin(q2), L1 + L2*Math.cos(q2));
 
+// ---- command each servo from its OWN zero/invert/limit --------------------
+// hip world angle = q1; knee is measured vs the femur, so its deg maps q2.
 const RAD = 180 / Math.PI;
-const norm360 = a => ((a % 360) + 360) % 360;
+const sh = mh.inverted ? -1 : 1;
+const sk = mk.inverted ? -1 : 1;
+const hipDeg  = fit(sh * (q1 * RAD - mh.zeroDegrees), mh.limitDegrees);
+const kneeDeg = fit(sk * (q2 * RAD - mk.zeroDegrees), mk.limitDegrees);
 
-const hipDeg  = norm360(-q1 * RAD);
-const kneeDeg = norm360(q2 * RAD - 180);
-
-// hip first — the knee's "Relative to: Ground" reference reads the updated femur
+// hip first — the knee's "Relative to" reference reads the updated femur
 m.setMotor('J20',  hipDeg);
 m.setMotor('Feet', kneeDeg);
 `;
 
 /**
  * Walking gait for the PARALLEL leg — physically driven by the two servos.
- * Each frame we solve the inverse kinematics for the desired foot target
- * (a clean chain of circle-circle intersections for this closed loop), then
- * command both motors to the resulting angles. The servos drive the linkage
- * and the foot follows, exactly as a real robot leg does.
- *
- * Branch choice is locked to the home configuration, and the stride is kept
- * within the leg's comfortable reach (±10mm) so the closed chain never flips
- * assembly modes. Base = foot home (15, -25) treated as local 0,0.
+ * Reads the scene with m.getJoint / m.getMotor (no hardcoded coordinates):
+ * pivots, link lengths, the rigid-body shapes, and each servo's zero/invert/
+ * limit all come from the live mechanism, so the IK adapts if you move joints
+ * or retune the motors. Only the gait shape is authored. The branch choice is
+ * warm-started from the live pose so the closed chain never flips modes.
  */
 const LEG_PARALLEL_GAIT = `// Parallel leg · walking gait — drives the TWO SERVOS (physical).
-// Analytic IK finds the servo angles for each foot target, then commands the
-// Femur Servo (crank 'Knees') and Tibia Servo (crank 'J7'); the servos drive
-// the linkage and the foot follows — like a real robot.
-// Base = foot home (15, -25) = local 0,0.  +X forward, +Y up.
-
-// ---- fixed geometry (world mm) --------------------------------------------
-const S_f = { x: 15, y: 10 };   // Femur Servo pivot
-const S_t = { x: 0,  y: 0  };   // Tibia Servo pivot
-// home positions of the moving joints (define the rigid-body shapes)
-const KNEES0 = { x: 35,     y: -10 };
-const FEET0  = { x: 15.001, y: -24.999 };
-const J120   = { x: 40.001, y: -4.999 };
-const J90    = { x: 19.984, y: 14.985 };
-const J80    = { x: 9.984,  y: 14.962 };
-const J70    = { x: -0.034, y: 10 };
+// Geometry is READ from the scene via m.getJoint / m.getMotor (no hardcoded
+// coordinates); the IK adapts automatically if joints move or servos change.
+// Only the gait shape below is authored.  +X forward, +Y up.
 
 // ---- vector helpers -------------------------------------------------------
 const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
@@ -104,13 +109,47 @@ function circleInt(c1, r1, c2, r2, ref) {
   return len(sub(p1, ref)) <= len(sub(p2, ref)) ? p1 : p2;
 }
 
-// rigid lengths derived from the home shape (exact)
-const R_FEMUR = len(sub(KNEES0, S_f));   // |Knees - FemurServo|
-const D_KF    = len(sub(FEET0, KNEES0)); // |Feet  - Knees|
-const L_TL2   = len(sub(J120, J90));     // |J12   - J9|
-const R_J9    = len(sub(J90, S_f));      // |J9    - FemurServo|
-const L_TL1   = len(sub(J80, J70));      // |J8    - J7|
-const R_HORN  = len(sub(J70, S_t));      // |J7    - TibiaServo|
+// fit an angle (deg) into a servo's real travel by picking the best 360°-wrap
+const fit = (d, limit) => {
+  let best = d, bestDist = Infinity;
+  for (const c of [d - 360, d, d + 360]) {
+    const cl = Math.max(0, Math.min(limit, c));
+    const dist = Math.abs(c - cl);
+    if (dist < bestDist) { bestDist = dist; best = c; }
+  }
+  return best;
+};
+
+// ---- capture the rest geometry ONCE (names come from the preset) ----------
+// Reading the home pose a single time (not every frame) keeps the branch
+// references and rigid lengths FIXED, so the solver's tiny per-frame motion
+// can't feed back and rattle the foot. Motors stay live so you can retune them.
+const S = m.state;
+if (!S.ok) {
+  const gj = (n) => { const j = m.getJoint(n); return j && { x: j.x, y: j.y }; };
+  const SF = gj('Femur Servo'), ST = gj('Tibia Servo');
+  const KN = gj('Knees'), FT = gj('Feet');
+  const P12 = gj('J12'), P9 = gj('J9'), P8 = gj('J8'), P7 = gj('J7');
+  if (SF && ST && KN && FT && P12 && P9 && P8 && P7) {
+    S.SF = SF; S.ST = ST; S.KN = KN; S.FT = FT;
+    S.P12 = P12; S.P9 = P9; S.P8 = P8; S.P7 = P7;
+    S.R_FEMUR = len(sub(KN, SF));   // Knees <-> Femur Servo (femur leg)
+    S.D_KF    = len(sub(FT, KN));   // Feet  <-> Knees (rigid body)
+    S.L_TL2   = len(sub(P12, P9));  // J12   <-> J9 (tibia link 2)
+    S.R_J9    = len(sub(P9, SF));   // J9    <-> Femur Servo (body B1)
+    S.L_TL1   = len(sub(P8, P7));   // J8    <-> J7 (tibia link 1)
+    S.R_HORN  = len(sub(P7, ST));   // J7    <-> Tibia Servo (horn)
+    S.ok = true;
+  }
+}
+const mf = m.getMotor('Knees');  // femur servo (read live)
+const mt = m.getMotor('J7');     // tibia servo (read live)
+if (!S.ok || !mf || !mt) return; // scene not ready
+
+const SF = S.SF, ST = S.ST, KN = S.KN, FT = S.FT;
+const P12 = S.P12, P9 = S.P9, P8 = S.P8, P7 = S.P7;
+const R_FEMUR = S.R_FEMUR, D_KF = S.D_KF, L_TL2 = S.L_TL2;
+const R_J9 = S.R_J9, L_TL1 = S.L_TL1, R_HORN = S.R_HORN;
 
 // ---- foot path (D-shape, mirrored to walk forward) ------------------------
 const BASE_X = 15, BASE_Y = -25;  // foot home = local 0,0
@@ -133,65 +172,47 @@ if (phase < STANCE) {              // STANCE: drag along ground, +FWD -> -BACK
 lx = -lx; // face forward toward +X on screen
 const target = { x: BASE_X + lx, y: BASE_Y + ly };
 
-// ---- inverse kinematics -> servo angles -----------------------------------
-// 1. Knees: 25mm from the foot target AND on the femur circle about Femur Servo
-const knees = circleInt(target, D_KF, S_f, R_FEMUR, KNEES0);
+// ---- inverse kinematics (warm-started from the live pose) -----------------
+// 1. Knees: D_KF from the foot target (rigid body) AND on the femur circle
+const knees = circleInt(target, D_KF, SF, R_FEMUR, KN);
 if (knees) {
-  // 2. Tibia Leg body orientation from Knees -> Feet, then place J12
-  const bodyA = ang(sub(target, knees)) - ang(sub(FEET0, KNEES0));
-  const j12 = add(knees, rot(sub(J120, KNEES0), bodyA));
+  // 2. Tibia Leg body: rotate the live Knees->J12 offset by the change in the
+  //    Knees->Feet direction
+  const bodyA = ang(sub(target, knees)) - ang(sub(FT, KN));
+  const j12 = add(knees, rot(sub(P12, KN), bodyA));
   // 3. J9: on Tibia Link 2 from J12 AND on body B1's circle about Femur Servo
-  const j9 = circleInt(j12, L_TL2, S_f, R_J9, J90);
+  const j9 = circleInt(j12, L_TL2, SF, R_J9, P9);
   if (j9) {
     // 4. B1 rotation -> J8, then J7 on the tibia horn about Tibia Servo
-    const phi = ang(sub(j9, S_f)) - ang(sub(J90, S_f));
-    const j8 = add(S_f, rot(sub(J80, S_f), phi));
-    const j7 = circleInt(j8, L_TL1, S_t, R_HORN, J70);
+    const phi = ang(sub(j9, SF)) - ang(sub(P9, SF));
+    const j8 = add(SF, rot(sub(P8, SF), phi));
+    const j7 = circleInt(j8, L_TL1, ST, R_HORN, P7);
     if (j7) {
-      // 5. servo commands (deg from each zero: femur zero = 180, tibia = 0).
+      // 5. command each servo from its OWN zero/invert/limit (read, not hardcoded)
       const RAD = 180 / Math.PI;
-      // Pick the 360°-equivalent of the angle that best fits the servo's REAL
-      // travel [0, limit] (read from the motor), instead of a hardcoded ±180.
-      // The motor still clamps to [0, limit] as the final guard.
-      const fit = (d, limit) => {
-        let best = d, bestDist = Infinity;
-        for (const c of [d - 360, d, d + 360]) {
-          const cl = Math.max(0, Math.min(limit, c));
-          const dist = Math.abs(c - cl);
-          if (dist < bestDist) { bestDist = dist; best = c; }
-        }
-        return best;
+      const servoDeg = (crank, pivot, mo) => {
+        const world = ang(sub(crank, pivot)) * RAD;
+        const s = mo.inverted ? -1 : 1;
+        return fit(s * (world - mo.zeroDegrees), mo.limitDegrees);
       };
-      const femurDeg = fit(ang(sub(knees, S_f)) * RAD - 180, m.motorLimit('Knees'));
-      const tibiaDeg = fit(ang(sub(j7, S_t)) * RAD, m.motorLimit('J7'));
-      m.setMotor('Knees', femurDeg);  // Femur Servo
-      m.setMotor('J7', tibiaDeg);     // Tibia Servo
+      m.setMotor('Knees', servoDeg(knees, SF, mf));  // Femur Servo
+      m.setMotor('J7', servoDeg(j7, ST, mt));        // Tibia Servo
     }
   }
 }
 `;
 
 /**
- * Walking gait for "Leg · parallel 2" (the horn-driven leg) — same physical
- * approach: solve the IK for the foot target, then command both actuators.
- * The Femur Actuator rotates J21 (the foot sits 80mm from J21 on the rigid
- * Tibia body); the Tibia Actuator turns a 25mm horn whose 99.787mm linkage
- * sets the body's orientation via J17. Base = foot home (-80, -80).
+ * Walking gait for "Leg · parallel 2" (the horn-driven leg). Rather than
+ * hardcoding coordinates, the script READS the scene with m.getJoint /
+ * m.getMotor: the pivots, link lengths, rigid-body shape, and each servo's
+ * zero/invert/limit all come from the live mechanism, so the IK adapts if you
+ * move joints or retune the motors. Only the gait shape is authored.
  */
 const LEG_PARALLEL2_GAIT = `// Leg · parallel 2 · walking gait — drives the TWO ACTUATORS (physical).
-// Analytic IK finds the actuator angles for each foot target, then commands
-// the Femur Actuator (crank 'J21') and Tibia Actuator (crank 'J22'); the
-// servos drive the linkage and the foot follows.
-// Base = foot home (-9.657, -99.783) = local 0,0.  +X forward, +Y up.
-
-// ---- fixed geometry (world mm) --------------------------------------------
-const F = { x: 0,     y: 0  };     // Femur Actuator pivot
-const T = { x: 19.75, y: 20 };     // Tibia Actuator pivot
-// home positions of the moving joints
-const J21_0  = { x: 57.233, y: -55.896 };
-const J22_0  = { x: 28.333, y: 43.481 };
-const J17_0  = { x: 94.731, y: -31.022 };
-const FEET0  = { x: -9.657, y: -99.783 };
+// Geometry is READ from the scene via m.getJoint / m.getMotor (no hardcoded
+// coordinates); the IK adapts automatically if joints move or servos change.
+// Only the gait shape below is authored.  +X forward, +Y up.
 
 // ---- vector helpers -------------------------------------------------------
 const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
@@ -215,11 +236,41 @@ function circleInt(c1, r1, c2, r2, ref) {
   return len(sub(p1, ref)) <= len(sub(p2, ref)) ? p1 : p2;
 }
 
-// rigid lengths derived from the home shape (exact)
-const R_FEMUR  = len(sub(J21_0, F));     // |J21 - Femur Actuator|  = 80
-const D_FT_J21 = len(sub(FEET0, J21_0)); // |Feet - J21| (body)     = 80
-const L_LINK   = len(sub(J17_0, J22_0)); // |J17 - J22|             = 99.787
-const R_HORN   = len(sub(J22_0, T));     // |J22 - Tibia Actuator|  = 25
+// fit an angle (deg) into a servo's real travel by picking the best 360°-wrap
+const fit = (d, limit) => {
+  let best = d, bestDist = Infinity;
+  for (const c of [d - 360, d, d + 360]) {
+    const cl = Math.max(0, Math.min(limit, c));
+    const dist = Math.abs(c - cl);
+    if (dist < bestDist) { bestDist = dist; best = c; }
+  }
+  return best;
+};
+
+// ---- capture the rest geometry ONCE (names come from the preset) ----------
+// Reading the home pose a single time (not every frame) keeps the branch
+// references and rigid lengths FIXED, so the solver's tiny per-frame motion
+// can't feed back and rattle the foot. Motors stay live so you can retune them.
+const S = m.state;
+if (!S.ok) {
+  const gj = (n) => { const j = m.getJoint(n); return j && { x: j.x, y: j.y }; };
+  const F = gj('Femur Actuator'), T = gj('Tibia Actuator');
+  const J21 = gj('J21'), J22 = gj('J22'), J17 = gj('J17'), FT = gj('Feet');
+  if (F && T && J21 && J22 && J17 && FT) {
+    S.F = F; S.T = T; S.J21 = J21; S.J22 = J22; S.J17 = J17; S.FT = FT;
+    S.R_FEMUR  = len(sub(J21, F));   // femur length
+    S.R_HORN   = len(sub(J22, T));   // horn length
+    S.L_LINK   = len(sub(J17, J22)); // tibia linkage length
+    S.D_FT_J21 = len(sub(FT, J21));  // Feet <-> J21 (rigid body)
+    S.ok = true;
+  }
+}
+const mf = m.getMotor('Femur Actuator'); // read live
+const mt = m.getMotor('Tibia Actuator'); // read live
+if (!S.ok || !mf || !mt) return; // scene not ready
+
+const F = S.F, T = S.T, J21 = S.J21, J22 = S.J22, J17 = S.J17, FT = S.FT;
+const R_FEMUR = S.R_FEMUR, R_HORN = S.R_HORN, L_LINK = S.L_LINK, D_FT_J21 = S.D_FT_J21;
 
 // ---- foot path (D-shape, mirrored to walk forward) ------------------------
 const BASE_X = -0.04, BASE_Y = -100.02;  // foot home = local 0,0
@@ -242,35 +293,27 @@ if (phase < STANCE) {              // STANCE: drag along ground, +FWD -> -BACK
 lx = -lx; // face forward toward +X (delete this line if it walks backward)
 const target = { x: BASE_X + lx, y: BASE_Y + ly };
 
-// ---- inverse kinematics -> actuator angles --------------------------------
-// 1. J21: 80mm from the foot target (rigid body) AND on the femur circle
-const j21 = circleInt(target, D_FT_J21, F, R_FEMUR, J21_0);
+// ---- inverse kinematics (warm-started from the live pose) -----------------
+// 1. J21: D_FT_J21 from the foot target (rigid body) AND on the femur circle
+const j21 = circleInt(target, D_FT_J21, F, R_FEMUR, J21);
 if (j21) {
-  // 2. Tibia body orientation from J21 -> Feet, then place J17
-  const bodyA = ang(sub(target, j21)) - ang(sub(FEET0, J21_0));
-  const j17 = add(j21, rot(sub(J17_0, J21_0), bodyA));
+  // 2. Tibia body: rotate the live J21->J17 offset by the change in the
+  //    J21->Feet direction (keeps the rigid body shape exactly)
+  const bodyA = ang(sub(target, j21)) - ang(sub(FT, J21));
+  const j17 = add(j21, rot(sub(J17, J21), bodyA));
   // 3. J22: on the tibia linkage from J17 AND on the horn circle about Tibia Act
-  const j22 = circleInt(j17, L_LINK, T, R_HORN, J22_0);
+  const j22 = circleInt(j17, L_LINK, T, R_HORN, J22);
   if (j22) {
-    // 4. actuator commands. Femur: inverted, zero 0 -> world = -deg.
-    //    Tibia: zero 0 -> world = deg.
+    // 4. command each servo from its OWN zero/invert/limit (read, not hardcoded):
+    //    world = ang(crank - pivot);  deg = (inverted ? -1 : 1) * (world - zero)
     const RAD = 180 / Math.PI;
-    // Pick the 360°-equivalent of the angle that best fits the servo's REAL
-    // travel [0, limit] (read from the motor), instead of a hardcoded ±180.
-    // The motor still clamps to [0, limit] as the final guard.
-    const fit = (d, limit) => {
-      let best = d, bestDist = Infinity;
-      for (const c of [d - 360, d, d + 360]) {
-        const cl = Math.max(0, Math.min(limit, c));
-        const dist = Math.abs(c - cl);
-        if (dist < bestDist) { bestDist = dist; best = c; }
-      }
-      return best;
+    const servoDeg = (crank, pivot, mo) => {
+      const world = ang(sub(crank, pivot)) * RAD;
+      const s = mo.inverted ? -1 : 1;
+      return fit(s * (world - mo.zeroDegrees), mo.limitDegrees);
     };
-    const femurDeg = fit(-ang(sub(j21, F)) * RAD, m.motorLimit('Femur Actuator'));
-    const tibiaDeg = fit(ang(sub(j22, T)) * RAD, m.motorLimit('Tibia Actuator'));
-    m.setMotor('Femur Actuator', femurDeg);  // crank J21
-    m.setMotor('Tibia Actuator', tibiaDeg);  // crank J22
+    m.setMotor('Femur Actuator', servoDeg(j21, F, mf));  // crank J21
+    m.setMotor('Tibia Actuator', servoDeg(j22, T, mt));  // crank J22
   }
 }
 `;
