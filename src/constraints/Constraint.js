@@ -8,8 +8,17 @@
  *
  * Liskov: every subclass must honour the same contract — `apply()` performs a
  * single relaxation pass and must leave pinned joints (invMass 0) untouched.
+ *
+ * `priority` controls solve order within each iteration (ascending). Higher
+ * priority runs later, so it is the more "authoritative" within a pass — e.g.
+ * a rail (AxisConstraint) runs after a motor-angle limit so the joint always
+ * ends up on its rail.
  */
 export class Constraint {
+  constructor() {
+    this.priority = 0;
+  }
+
   /**
    * Perform one relaxation pass, mutating joint positions in place.
    * @abstract

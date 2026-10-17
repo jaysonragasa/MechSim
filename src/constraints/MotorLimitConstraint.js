@@ -19,6 +19,7 @@ export class MotorLimitConstraint extends Constraint {
   constructor(driver) {
     super();
     this.driver = driver;
+    this.priority = 10; // after links/bodies, but before rails (AxisConstraint)
   }
 
   apply() {
@@ -33,8 +34,9 @@ export class MotorLimitConstraint extends Constraint {
     if (r === 0) return;
 
     // Servo angle (deg) relative to the zero reference, honoring invert,
-    // normalized to [0, 360).
-    let servo = (offset.angle - d.zeroRad) / DEG;
+    // normalized to [0, 360). zeroWorldRad includes the parent-link base for
+    // serial motors, so the limit rotates with the parent.
+    let servo = (offset.angle - d.zeroWorldRad) / DEG;
     if (d.inverted) servo = -servo;
     servo = ((servo % 360) + 360) % 360;
 
@@ -46,7 +48,7 @@ export class MotorLimitConstraint extends Constraint {
     const clamped = toLimit <= toZero ? d.limitDegrees : 0;
 
     const rawDeg = d.inverted ? -clamped : clamped;
-    const world = d.zeroRad + rawDeg * DEG;
+    const world = d.zeroWorldRad + rawDeg * DEG;
     crank.position = pivot.position.add(Vector2.fromAngle(world, r));
   }
 

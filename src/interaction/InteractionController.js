@@ -1,5 +1,6 @@
 import { Vector2 } from '../math/Vector2.js';
 import { distToSegment, convexHull, polygonArea, pointInPolygon } from '../math/geometry2d.js';
+import { AxisConstraint } from '../constraints/AxisConstraint.js';
 
 /**
  * Turns raw pointer/wheel events into tool-aware intent. The active tool
@@ -23,6 +24,7 @@ export class InteractionController {
 
     this.hoveredItem = null;
     this.draggingJoint = null;
+    this._draggingRail = null; // { constraint, which: 'start'|'end' }
 
     this._panning = false;
     this._moved = false;
@@ -37,6 +39,18 @@ export class InteractionController {
     this.mechanism = mechanism;
     this.hoveredItem = null;
     this.draggingJoint = null;
+    this._draggingRail = null;
+  }
+
+  /** Nearest finite-rail endpoint handle under the pointer, or null. */
+  _pickRailEnd(px) {
+    for (const c of this.mechanism.constraints) {
+      if (!(c instanceof AxisConstraint) || !c.finite) continue;
+      const [s, e] = c.trackSegment();
+      if (this.camera.worldToScreen(s).distanceTo(px) <= this.pickRadiusPx) return { constraint: c, which: 'start' };
+      if (this.camera.worldToScreen(e).distanceTo(px) <= this.pickRadiusPx) return { constraint: c, which: 'end' };
+    }
+    return null;
   }
 
   _bind() {
@@ -124,11 +138,18 @@ export class InteractionController {
       return;
     }
 
+    if (tool === 'rail') {
+      const world = this.camera.screenToWorld(px);
+      const snapped = this.cb.snap ? this.cb.snap(world) : world;
+      this.cb.onRailClick?.(joint, snapped);
+      return;
+    }
+
     // select & joint tools
     if (joint) {
       this.cb.onSelect?.({ type: 'joint', ref: joint }, { additive: e.shiftKey });
       this.draggingJoint = joint;
-      joint.dragging = true;
+      this.cb.onDragStart?.(joint);
       this.canvas.setPointerCapture?.(e.pointerId);
       return;
     }
@@ -137,6 +158,16 @@ export class InteractionController {
       const world = this.camera.screenToWorld(px);
       this.cb.onAddJoint?.(world);
       return;
+    }
+
+    // Select tool: grab a rail endpoint handle to reshape the rail.
+    if (tool === 'select') {
+      const railEnd = this._pickRailEnd(px);
+      if (railEnd) {
+        this._draggingRail = railEnd;
+        this.canvas.setPointerCapture?.(e.pointerId);
+        return;
+      }
     }
 
     // select tool on a link/body, or empty
@@ -156,8 +187,17 @@ export class InteractionController {
       return;
     }
 
+    if (this._draggingRail) {
+      const w = this.cb.snap ? this.cb.snap(worldMm) : worldMm;
+      this.cb.setRailEnd?.(this._draggingRail.constraint, this._draggingRail.which, w);
+      this._lastPointerPx = px;
+      this.cb.onChange?.();
+      return;
+    }
+
     if (this.draggingJoint) {
-      this.draggingJoint.position = this.cb.snap ? this.cb.snap(worldMm) : worldMm;
+      const w = this.cb.snap ? this.cb.snap(worldMm) : worldMm;
+      this.cb.onDragMove?.(w); // soft pull; the solver keeps links rigid
       this._lastPointerPx = px;
       this.cb.onChange?.();
       return;
@@ -166,8 +206,11 @@ export class InteractionController {
     const hit = this._pickItem(px);
     this._setHover(hit);
     const tool = this._tool();
+    const railEnd = tool === 'select' ? this._pickRailEnd(px) : null;
     this.canvas.style.cursor =
-      tool === 'joint' && !hit ? 'copy'
+      railEnd ? 'grab'
+      : tool === 'rail' ? 'crosshair'
+      : tool === 'joint' && !hit ? 'copy'
       : tool === 'link' ? (hit ? 'pointer' : 'crosshair')
       : hit?.type === 'joint' ? 'grab'
       : hit ? 'pointer'
@@ -176,9 +219,12 @@ export class InteractionController {
 
   _onUp() {
     if (this.draggingJoint) {
-      this.draggingJoint.dragging = false;
       this.draggingJoint = null;
-      if (this._moved) this.cb.onDragEnd?.();
+      this.cb.onDragEnd?.(this._moved); // always clean up; commit only if moved
+    }
+    if (this._draggingRail) {
+      this._draggingRail = null;
+      if (this._moved) this.cb.onRailEndCommit?.();
     }
     this._panning = false;
     this.canvas.style.cursor = 'crosshair';

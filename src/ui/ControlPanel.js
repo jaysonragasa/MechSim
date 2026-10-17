@@ -24,14 +24,47 @@ export class ControlPanel {
     this._jointEls = new Map(); // jointId -> element
     this._linkEls = new Map();  // link -> element
     this._bodyEls = new Map();  // body -> element
+    // Per-section collapsed state (keyed by title), remembered across reloads.
+    this._collapsed = this._loadCollapsed();
+  }
+
+  _loadCollapsed() {
+    try { return JSON.parse(localStorage.getItem('mechsim.panels.v1') || '{}') || {}; }
+    catch { return {}; }
+  }
+
+  _saveCollapsed() {
+    try { localStorage.setItem('mechsim.panels.v1', JSON.stringify(this._collapsed)); } catch { /* ignore */ }
+  }
+
+  /** A collapsible panel section whose open/closed state persists by title. */
+  _section(title) {
+    const sec = el('section', 'panel-section');
+    const h = el('h2');
+    const label = el('span');
+    label.textContent = title;
+    const chev = el('span', 'sec-chevron');
+    chev.textContent = '▾';
+    h.append(label, chev);
+    const body = el('div', 'panel-body');
+    sec.append(h, body);
+
+    if (this._collapsed[title]) sec.classList.add('collapsed');
+    h.addEventListener('click', () => {
+      const nowCollapsed = !sec.classList.contains('collapsed');
+      sec.classList.toggle('collapsed', nowCollapsed);
+      this._collapsed[title] = nowCollapsed;
+      this._saveCollapsed();
+    });
+    return sec;
   }
 
   build() {
     this.root.innerHTML = '';
     this.root.appendChild(this._presetsSection());
     this.root.appendChild(this._simulationSection());
+    this.root.appendChild(this._gridSection());
     this.root.appendChild(this._motorSection());
-    this.root.appendChild(this._addJointSection());
     this.root.appendChild(this._jointsSection());
     this.root.appendChild(this._linksSection());
     this.root.appendChild(this._rigidSection());
@@ -41,15 +74,20 @@ export class ControlPanel {
   // ---- Static sections ----------------------------------------------------
 
   _presetsSection() {
-    const sec = section('Presets');
+    const sec = this._section('Presets');
     const body = sec.querySelector('.panel-body');
     const group = el('div', 'btn-group');
+    const serial = button('Leg · serial', () => this.actions.loadPreset('legSerial'), 'primary');
+    serial.title = 'Robot leg in serial connection (2 DOF)';
+    const parallel = button('Leg · parallel', () => this.actions.loadPreset('legMultilinkage'), 'primary');
+    parallel.title = 'Robot leg in parallel connection with 2 links';
+    const parallelHorn = button('Leg · parallel 2', () => this.actions.loadPreset('legParallelHorn'), 'primary');
+    parallelHorn.title = 'Robot leg, parallel with tibia servo horn + linkage';
     group.append(
-      button('Four-bar', () => this.actions.loadPreset('fourBar'), 'primary'),
+      serial,
+      parallel,
+      parallelHorn,
       button('Slider-crank', () => this.actions.loadPreset('sliderCrank'), 'primary'),
-      button('Leg · parallel', () => this.actions.loadPreset('legParallel'), 'primary'),
-      button('Leg · serial', () => this.actions.loadPreset('legSerial'), 'primary'),
-      button('Leg · offset link', () => this.actions.loadPreset('legOffset'), 'primary'),
       button('Empty', () => this.actions.loadPreset('empty'), 'ghost')
     );
     body.appendChild(group);
@@ -58,7 +96,7 @@ export class ControlPanel {
   }
 
   _simulationSection() {
-    const sec = section('Simulation');
+    const sec = this._section('Simulation');
     const body = sec.querySelector('.panel-body');
 
     this._playBtn = button('▶ Play', () => this.actions.togglePlay(), 'primary');
@@ -81,78 +119,57 @@ export class ControlPanel {
     this._iterValue.textContent = '24 it';
     body.appendChild(iterRow);
     body.appendChild(hint('More solver iterations = stiffer, more accurate linkages.'));
+    return sec;
+  }
 
-    // Snap-to-grid step (the on/off toggle lives in the toolbar).
-    const snap = this.actions.getSnap ? this.actions.getSnap() : { step: 5 };
-    const snapRow = el('div', 'row');
-    snapRow.appendChild(label('Snap step'));
-    const snapInput = input('number', { min: 0.1, step: 0.5, value: snap.step });
-    snapInput.addEventListener('change', () => this.actions.setSnapStep?.(Number(snapInput.value) || 5));
+  _gridSection() {
+    const sec = this._section('Grid & snapping');
+    const body = sec.querySelector('.panel-body');
+    const snap = this.actions.getSnap ? this.actions.getSnap() : { enabled: false, step: 5 };
+
+    const enRow = el('label', 'row');
+    enRow.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:auto';
+    this._snapEnable = input('checkbox', {});
+    this._snapEnable.checked = snap.enabled;
+    this._snapEnable.addEventListener('change', () => this.actions.setSnapEnabled?.(this._snapEnable.checked));
+    enRow.append(this._snapEnable, document.createTextNode('Snap to grid (G)'));
+    body.appendChild(enRow);
+
+    const stepRow = el('div', 'row');
+    stepRow.appendChild(label('Step'));
+    const stepInput = input('number', { min: 0.1, step: 0.5, value: snap.step });
+    stepInput.addEventListener('change', () => this.actions.setSnapStep?.(Number(stepInput.value) || 5));
     const mm = el('span', 'tag');
     mm.textContent = 'mm';
-    snapRow.append(snapInput, mm);
-    body.appendChild(snapRow);
-    body.appendChild(hint('Toggle snapping with the Snap tool (G). Joints snap to this grid step when added or dragged.'));
+    stepRow.append(stepInput, mm);
+    body.appendChild(stepRow);
+    body.appendChild(hint('Joints snap to this grid step when added or dragged. The Snap toolbar button toggles it too.'));
     return sec;
   }
 
   _motorSection() {
-    const sec = section('Motor');
+    const sec = this._section('Motor');
     const body = sec.querySelector('.panel-body');
     this._motorBody = body;
     return sec;
   }
 
-  _addJointSection() {
-    const sec = section('Add joint');
-    const body = sec.querySelector('.panel-body');
-
-    const row = el('div', 'row');
-    const xf = field('X mm');
-    const yf = field('Y mm');
-    this._newX = xf.input;
-    this._newY = yf.input;
-    this._newX.value = '0';
-    this._newY.value = '0';
-    row.append(xf.wrap, yf.wrap);
-    body.appendChild(row);
-
-    const row2 = el('div', 'row');
-    const fixedWrap = el('label', '');
-    fixedWrap.style.display = 'flex';
-    fixedWrap.style.alignItems = 'center';
-    fixedWrap.style.gap = '6px';
-    fixedWrap.style.minWidth = 'auto';
-    this._newFixed = input('checkbox', {});
-    fixedWrap.append(this._newFixed, document.createTextNode('Grounded'));
-    const addBtn = button('+ Add joint', () => {
-      this.actions.addJoint({
-        x: Number(this._newX.value) || 0,
-        y: Number(this._newY.value) || 0,
-        fixed: this._newFixed.checked
-      });
-    }, 'primary');
-    row2.append(fixedWrap, addBtn);
-    body.appendChild(row2);
-    return sec;
-  }
-
   _jointsSection() {
-    const sec = section('Joints');
+    const sec = this._section('Joints');
     this._jointList = el('div', 'joint-list');
     sec.querySelector('.panel-body').appendChild(this._jointList);
     return sec;
   }
 
   _linksSection() {
-    const sec = section('Links & arms');
+    const sec = this._section('Links & arms');
     const body = sec.querySelector('.panel-body');
     this._linkBody = body;
     return sec;
   }
 
   _rigidSection() {
-    const sec = section('Rigid bodies & offsets');
+    const sec = this._section('Rigid bodies & offsets');
     const body = sec.querySelector('.panel-body');
     this._bodyBody = body;
     return sec;
@@ -236,21 +253,6 @@ export class ControlPanel {
   _renderLinkControls() {
     const body = this._linkBody;
     body.innerHTML = '';
-    const joints = this.actions.getJoints();
-
-    const row = el('div', 'row');
-    const selA = select(joints);
-    const selB = select(joints);
-    if (joints[1]) selB.value = joints[1].id;
-    row.append(selA, selB);
-    body.appendChild(row);
-
-    const addBtn = button('+ Connect with link', () => {
-      if (selA.value && selB.value && selA.value !== selB.value) {
-        this.actions.addLink(selA.value, selB.value);
-      }
-    }, 'primary');
-    body.appendChild(addBtn);
 
     const links = this.actions.getLinks();
     if (links.length) {
@@ -284,7 +286,7 @@ export class ControlPanel {
       }
       body.appendChild(listWrap);
     } else {
-      body.appendChild(hint('Pick two joints and connect them to form a rigid link (arm).'));
+      body.appendChild(hint('Use the Link tool (L) to connect joints into links.'));
     }
   }
 
@@ -293,28 +295,6 @@ export class ControlPanel {
     body.innerHTML = '';
     const joints = this.actions.getJoints();
     const bodies = this.actions.getBodies();
-
-    // Builder: tick any number of joints and freeze them into one rigid body.
-    const picker = el('div', 'check-list');
-    const checks = [];
-    for (const j of joints) {
-      const rowEl = el('label', 'check-row');
-      const cb = input('checkbox', {});
-      cb.value = j.id;
-      rowEl.append(cb, document.createTextNode(j.name));
-      // Hovering a candidate highlights it on the canvas too.
-      this._attachHover(rowEl, { type: 'joint', ref: j });
-      picker.appendChild(rowEl);
-      checks.push(cb);
-    }
-    body.appendChild(picker);
-
-    const freezeBtn = button('⬡ Freeze selected into rigid body', () => {
-      const ids = checks.filter((c) => c.checked).map((c) => c.value);
-      if (ids.length >= 2) this.actions.createRigidBody(ids);
-    }, 'primary');
-    body.appendChild(freezeBtn);
-    body.appendChild(hint('Tick two or more joints, then freeze them to lock their relative positions into one solid piece.'));
 
     if (bodies.length) {
       const listWrap = el('div', 'joint-list');
@@ -363,7 +343,7 @@ export class ControlPanel {
       }
       body.appendChild(listWrap);
     } else {
-      body.appendChild(hint('A rigid body is one solid piece: its pivots keep fixed offsets and rotate together. Freeze 2+ joints, then weld extra pivots at an offset (e.g. a link-attach point offset from a knee).'));
+      body.appendChild(hint('With the Link tool, multi-select connected links and right-click → Convert to rigid body.'));
     }
   }
 
@@ -404,21 +384,9 @@ export class ControlPanel {
 
         body.appendChild(li);
       }
+    } else {
+      body.appendChild(hint('No motors. Select a joint (Select tool), then in its editor choose "Make motor".'));
     }
-
-    // Builder to attach a new motor between a pivot and a crank joint.
-    const row = el('div', 'row');
-    const pivotSel = select(joints, 'pivot');
-    const crankSel = select(joints, 'crank');
-    if (joints[1]) crankSel.value = joints[1].id;
-    row.append(pivotSel, crankSel);
-    body.appendChild(row);
-    body.appendChild(button('+ Add rotary motor', () => {
-      if (pivotSel.value && crankSel.value && pivotSel.value !== crankSel.value) {
-        this.actions.addMotor(pivotSel.value, crankSel.value, 90);
-      }
-    }, 'primary'));
-    body.appendChild(hint('A motor spins the crank joint around the pivot. Press Play to run it.'));
   }
 
   // ---- Cross-highlight ----------------------------------------------------
@@ -462,6 +430,10 @@ export class ControlPanel {
     for (const d of this.actions.getDrivers()) {
       if (d._angleReadout) d._angleReadout.textContent = `${d.angleDegrees.toFixed(0)}°`;
     }
+    // Keep the snap checkbox in sync with the toolbar toggle.
+    if (this._snapEnable && this.actions.getSnap && document.activeElement !== this._snapEnable) {
+      this._snapEnable.checked = this.actions.getSnap().enabled;
+    }
   }
 }
 
@@ -478,15 +450,6 @@ function el(tagName, className) {
   const n = document.createElement(tagName);
   if (className) n.className = className;
   return n;
-}
-
-function section(title) {
-  const sec = el('section', 'panel-section');
-  const h = el('h2');
-  h.textContent = title;
-  const body = el('div', 'panel-body');
-  sec.append(h, body);
-  return sec;
 }
 
 function button(text, onClick, extra = '') {

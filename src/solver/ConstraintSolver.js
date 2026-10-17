@@ -21,7 +21,11 @@ export class ConstraintSolver {
    * @param {import('../domain/Mechanism.js').Mechanism} mechanism
    */
   solve(mechanism) {
-    const constraints = mechanism.constraints;
+    // Apply in ascending priority so authoritative constraints (e.g. rails)
+    // run last within each pass and win over earlier ones (e.g. motor limits).
+    const constraints = [...mechanism.constraints].sort(
+      (a, b) => (a.priority || 0) - (b.priority || 0)
+    );
     for (let i = 0; i < this.iterations; i++) {
       for (let c = 0; c < constraints.length; c++) {
         constraints[c].apply();

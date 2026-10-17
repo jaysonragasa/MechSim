@@ -113,7 +113,17 @@ html, body {
   color: var(--text-dim);
   background: rgba(255, 255, 255, 0.02);
   border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
 }
+.panel-section > h2:hover { color: var(--text); }
+.sec-chevron { font-size: 10px; color: var(--text-dim); transition: transform 0.15s ease; }
+.panel-section.collapsed .sec-chevron { transform: rotate(-90deg); }
+.panel-section.collapsed > h2 { border-bottom: none; }
+.panel-section.collapsed .panel-body { display: none; }
 
 .panel-body { padding: 10px 12px; }
 
@@ -314,7 +324,8 @@ input.name-input:focus {
   transition: right 0.18s ease;
 }
 .panel-toggle:hover { color: var(--accent); }
-#app.panel-collapsed .control-panel { flex-basis: 0; width: 0; padding: 0; overflow: hidden; border-left: none; }
+/* Fully remove the panel from the flex flow so the canvas fills the gap. */
+#app.panel-collapsed .control-panel { display: none; }
 #app.panel-collapsed .panel-toggle { right: 0; }
 
 /* ===== Floating inspector panels ===== */
@@ -428,3 +439,122 @@ input.name-input:focus {
 
 /* Selected (persistent) outline on canvas-picked panel rows */
 .joint-item.selected { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+
+/* Script window (floating, draggable, resizable) */
+.script-window {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 280px;
+  min-height: 160px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  overflow: hidden;      /* required for the resize grip */
+  resize: both;
+}
+/* `display: flex` above would otherwise override the [hidden] attribute's
+   default display:none, so close/hide needs this explicit rule. */
+.script-window[hidden] { display: none; }
+.sw-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 6px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--line);
+  cursor: move;
+  user-select: none;
+  flex: 0 0 auto;
+}
+.sw-name { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-dim); }
+.sw-btns { display: flex; align-items: center; gap: 6px; }
+.sw-b {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sw-b:hover { border-color: var(--accent); }
+.sw-b.primary { background: var(--accent); color: #06121f; border-color: var(--accent); font-weight: 600; }
+.sw-b.close { padding: 4px 7px; }
+.sw-b.close:hover { border-color: var(--danger); color: var(--danger); }
+.sw-enable { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-dim); cursor: pointer; }
+.sw-enable input { width: 14px; height: 14px; }
+
+.sw-editor { flex: 1 1 auto; overflow: auto; background: var(--bg); }
+.sw-code {
+  margin: 0;
+  min-height: 100%;
+  color: #e6edf3;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 2;
+  outline: none;
+}
+.sw-status {
+  flex: 0 0 auto;
+  min-height: 18px;
+  padding: 4px 12px 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--line);
+  white-space: pre-wrap;
+}
+.sw-status.err { color: var(--danger); }
+
+/* ===== Modal (prompt dialog) ===== */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-card {
+  width: 320px;
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+  padding: 16px;
+}
+.modal-title { margin: 0 0 10px; font-size: 14px; }
+.modal-label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+.modal-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: var(--mono);
+}
+.modal-input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+.modal-btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.modal-b {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.modal-b:hover { border-color: var(--accent); }
+.modal-b.primary { background: var(--accent); color: #06121f; border-color: var(--accent); font-weight: 600; }

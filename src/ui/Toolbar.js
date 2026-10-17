@@ -18,6 +18,7 @@ export class Toolbar {
     this.playIco = document.getElementById('play-ico');
     this.playLbl = document.getElementById('play-lbl');
     this.infoBtn = document.getElementById('btn-info');
+    this.scriptBtn = document.getElementById('btn-script');
     this.snapBtn = document.getElementById('btn-snap');
     this.panelToggle = document.getElementById('panel-toggle');
 
@@ -26,12 +27,17 @@ export class Toolbar {
     }
     this.playBtn.addEventListener('click', () => cb.onPlayToggle?.());
     this.infoBtn.addEventListener('click', () => cb.onInfoToggle?.());
+    this.scriptBtn.addEventListener('click', () => cb.onScriptToggle?.());
     this.snapBtn.addEventListener('click', () => cb.onSnapToggle?.());
     this.panelToggle.addEventListener('click', () => cb.onPanelToggle?.());
   }
 
   setSnap(on) {
     this.snapBtn.classList.toggle('on', on);
+  }
+
+  setScript(open) {
+    this.scriptBtn.classList.toggle('active', open);
   }
 
   setTool(tool) {

@@ -20,7 +20,7 @@ export const MechanismSerializer = {
    * @param {import('../simulation/Driver.js').Driver[]} drivers
    * @returns {object}
    */
-  toObject(mechanism, drivers = []) {
+  toObject(mechanism, drivers = [], opts = {}) {
     const joints = mechanism.jointList.map((j) => ({
       id: j.id,
       name: j.name,
@@ -53,7 +53,8 @@ export const MechanismSerializer = {
         px: round(c.point.x),
         py: round(c.point.y),
         dx: round(c.direction.x),
-        dy: round(c.direction.y)
+        dy: round(c.direction.y),
+        length: Number.isFinite(c.length) ? round(c.length) : null
       }));
 
     const motors = drivers
@@ -65,14 +66,19 @@ export const MechanismSerializer = {
         speed: d.speedDegPerSec,
         inverted: d.inverted,
         zeroDegrees: d.zeroDegrees,
-        limitDegrees: d.limitDegrees
+        limitDegrees: d.limitDegrees,
+        reference: d.reference ? d.reference.id : null
       }));
 
-    return { format: FORMAT, version: VERSION, joints, links, bodies, sliders, motors };
+    const script = opts.script
+      ? { source: opts.script.source ?? '', enabled: !!opts.script.enabled }
+      : null;
+
+    return { format: FORMAT, version: VERSION, joints, links, bodies, sliders, motors, script };
   },
 
-  toJSON(mechanism, drivers) {
-    return JSON.stringify(this.toObject(mechanism, drivers), null, 2);
+  toJSON(mechanism, drivers, opts) {
+    return JSON.stringify(this.toObject(mechanism, drivers, opts), null, 2);
   },
 
   /**
@@ -111,7 +117,9 @@ export const MechanismSerializer = {
       const joint = byId.get(s.joint);
       if (joint) {
         mechanism.addConstraint(
-          new AxisConstraint(joint, new Vector2(s.px, s.py), new Vector2(s.dx, s.dy))
+          new AxisConstraint(joint, new Vector2(s.px, s.py), new Vector2(s.dx, s.dy), {
+            length: s.length == null ? Infinity : s.length
+          })
         );
       }
     }
@@ -127,12 +135,17 @@ export const MechanismSerializer = {
           speed: m.speed ?? 60,
           inverted: !!m.inverted,
           zeroDegrees: m.zeroDegrees ?? 0,
-          limitDegrees: m.limitDegrees ?? 360
+          limitDegrees: m.limitDegrees ?? 360,
+          reference: m.reference ? byId.get(m.reference) ?? null : null
         }));
       }
     }
 
-    return { mechanism, drivers };
+    const script = data.script
+      ? { source: data.script.source ?? '', enabled: !!data.script.enabled }
+      : { source: '', enabled: false };
+
+    return { mechanism, drivers, script };
   },
 
   fromJSON(json) {

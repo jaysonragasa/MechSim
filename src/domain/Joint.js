@@ -39,14 +39,15 @@ export class Joint {
     this.color = color;
 
     // Transient per-frame pins (not persisted / not user state).
-    this.driven = false;
-    this.dragging = false;
+    this.driven = false;   // positioned by a motor this frame
+    this.dragging = false; // dragged by the pointer this frame
+    this.pulled = false;   // pulled toward a scripted IK target this frame
   }
 
   /** Inverse mass for the solver: 0 immovable, small while dragging, else 1. */
   get invMass() {
     if (this.fixed || this.driven) return 0;
-    if (this.dragging) return Joint.DRAG_INV_MASS;
+    if (this.pulled) return Joint.DRAG_INV_MASS; // scripted IK target (soft)
     return 1;
   }
 

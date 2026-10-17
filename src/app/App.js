@@ -4,16 +4,20 @@ import { MechanismSerializer } from '../domain/MechanismSerializer.js';
 import { ConstraintSolver } from '../solver/ConstraintSolver.js';
 import { Simulator } from '../simulation/Simulator.js';
 import { AngleDriver } from '../simulation/AngleDriver.js';
+import { ScriptDriver } from '../simulation/ScriptDriver.js';
 import { Camera } from '../rendering/Camera.js';
 import { CanvasRenderer } from '../rendering/CanvasRenderer.js';
 import { InteractionController } from '../interaction/InteractionController.js';
 import { ControlPanel } from '../ui/ControlPanel.js';
 import { Toolbar } from '../ui/Toolbar.js';
 import { MotorLimitConstraint } from '../constraints/MotorLimitConstraint.js';
+import { AxisConstraint } from '../constraints/AxisConstraint.js';
 import { FloatingPanel } from '../ui/FloatingPanel.js';
 import { DockPanel } from '../ui/DockPanel.js';
 import { ContextMenu } from '../ui/ContextMenu.js';
 import { InfoOverlay } from '../ui/InfoOverlay.js';
+import { ScriptWindow } from '../ui/ScriptWindow.js';
+import { promptText } from '../ui/PromptDialog.js';
 import { Inspector } from '../ui/Inspector.js';
 import { Selection } from './Selection.js';
 import { History } from './History.js';
@@ -24,7 +28,8 @@ const STORAGE_KEY = 'mechsim.scene.v1';
 const HINTS = {
   select: 'Select: click to pick · drag joints to move · right-click for options · Shift adds',
   joint: 'Joint: click empty space to add a joint · drag an existing joint to move',
-  link: 'Link: click two joints to connect · click links to multi-select · right-click to convert to rigid'
+  link: 'Link: click two joints to connect · click links to multi-select · right-click to convert to rigid',
+  rail: 'Rail: click a joint (or empty space) to start, then click the far end — that joint slides along the rail'
 };
 
 /**
@@ -53,9 +58,23 @@ export class App {
     this.selection = new Selection();
     this.history = new History();
     this._linkStart = null;
+    this._railStart = null;      // in-progress rail: { joint, point }
+    this._dragJoint = null;      // joint currently being dragged
+    this._pointerWorld = null;   // last pointer position (mm), for the rail draft
+    this._fileName = 'scene';    // remembered export/import file name (no extension)
     this.panelCollapsed = false;
     this.snap = this._loadSnapPref();
     this._motorConstraints = [];
+
+    // Scripting: one optional ScriptDriver drives the scene each frame.
+    this._script = { source: '', enabled: false };
+    this.scriptDriver = null;
+
+    // Motion trail: while the sim runs (or a joint is dragged), record the
+    // path each moving joint traces so the user can see the curve it draws.
+    this._trailEnabled = this._loadTrailPref();
+    this._trail = new Map();   // jointId -> Vector2[]
+    this._trailMax = 1500;     // points kept per joint (ring buffer)
 
     this._highlight = null;
     this._highlightSets = emptySets();
@@ -77,10 +96,24 @@ export class App {
     this._updateInspectModeBtn();
     dom.inspectModeBtn?.addEventListener('click', () => this.toggleInspectorMode());
 
+    this.scriptWindow = new ScriptWindow({
+      getScript: () => this.actions().getScript(),
+      setScript: (src, en) => this.actions().setScript(src, en),
+      toggleScriptEnabled: (on) => this.actions().toggleScriptEnabled(on),
+      resetScript: () => this.actions().resetScript(),
+      togglePlay: () => this.togglePlay(),
+      isPlaying: () => this.simulator.running,
+      isTrailOn: () => this._trailEnabled,
+      setTrail: (on) => this.actions().setTrail(on),
+      clearTrail: () => this.clearTrail(),
+      onOpenChanged: (open) => this.toolbar.setScript(open)
+    });
+
     this.toolbar = new Toolbar({
       onTool: (t) => this.setTool(t),
       onPlayToggle: () => this.togglePlay(),
       onInfoToggle: () => { this.info.toggle(); this.toolbar.setInfo(this.info.visible); this._dirty = true; },
+      onScriptToggle: () => this.scriptWindow.toggle(),
       onSnapToggle: () => this.toggleSnap(),
       onPanelToggle: () => this.togglePanel()
     });
@@ -90,14 +123,23 @@ export class App {
       { canvas: this.canvas, camera: this.camera, mechanism: this.mechanism },
       {
         getTool: () => this.tool,
-        onPointerMove: (w) => this._updateCoordStatus(w),
+        onPointerMove: (w) => {
+          this._pointerWorld = w;
+          this._updateCoordStatus(w);
+          if (this.tool === 'rail' && this._railStart) this._dirty = true; // follow cursor
+        },
         onHover: (item) => this.setHighlight(item),
         onSelect: (item, mods) => this.selectFromCanvas(item, mods),
         onAddJoint: (w) => this.addJointAt(w),
         snap: (w) => this.snapWorld(w),
         onLinkClick: (item) => this.linkClick(item),
+        onRailClick: (joint, world) => this.railClick(joint, world),
+        setRailEnd: (constraint, which, world) => this.setRailEnd(constraint, which, world),
         onContext: (item, x, y) => this.openContext(item, x, y),
-        onDragEnd: () => this._afterEdit(),
+        onDragStart: (joint) => this.onDragStart(joint),
+        onDragMove: (world) => this.onDragMove(world),
+        onDragEnd: (moved) => this.onDragEnd(moved),
+        onRailEndCommit: () => { this.commit(); this._dirty = true; },
         onChange: () => { this._dirty = true; }
       }
     );
@@ -114,6 +156,7 @@ export class App {
     this._bootScene();
     this.panel.build();
     this.toolbar.setTool(this.tool);
+    if (this.scriptWindow.wasOpen) this.scriptWindow.open();
     this._loop();
   }
 
@@ -122,11 +165,16 @@ export class App {
   _bootScene() {
     const saved = this._loadSaved();
     if (saved) {
-      this._swapScene(saved.mechanism, saved.drivers, { frame: true });
+      this._swapScene(saved.mechanism, saved.drivers, { frame: true, script: saved.script });
     } else {
-      this.loadPreset('fourBar', { commit: false });
+      this.loadPreset('legSerial', { commit: false });
     }
     this.history.init(this._snapshot());
+  }
+
+  /** Motors only (AngleDrivers) — excludes the ScriptDriver. */
+  _motors() {
+    return this.simulator.drivers.filter((d) => d instanceof AngleDriver);
   }
 
   _loadSaved() {
@@ -140,13 +188,50 @@ export class App {
   }
 
   _snapshot() {
-    return MechanismSerializer.toObject(this.mechanism, this.simulator.drivers);
+    return MechanismSerializer.toObject(this.mechanism, this._motors(), { script: this._script });
   }
 
   _autosave() {
     try {
-      localStorage.setItem(STORAGE_KEY, MechanismSerializer.toJSON(this.mechanism, this.simulator.drivers));
+      localStorage.setItem(STORAGE_KEY, MechanismSerializer.toJSON(this.mechanism, this._motors(), { script: this._script }));
     } catch { /* ignore quota / privacy errors */ }
+  }
+
+  /** (Re)create the ScriptDriver from the current script source. */
+  _rebuildScriptDriver() {
+    if (this.scriptDriver) {
+      this.simulator.removeDriver(this.scriptDriver);
+      this.scriptDriver = null;
+    }
+    if (this._script.source && this._script.source.trim()) {
+      const sd = new ScriptDriver({
+        source: this._script.source,
+        mechanism: this.mechanism,
+        driversRef: this.simulator.drivers
+      });
+      sd.enabled = this._script.enabled;
+      this.simulator.addDriver(sd);
+      this.scriptDriver = sd;
+    }
+  }
+
+  /**
+   * Evaluate the script once at the current time and solve, without needing
+   * Play. Lets Apply/Reset preview the scripted pose while paused. Motors hold
+   * (or stay suppressed where the script commanded them).
+   */
+  _runScriptOnce() {
+    if (!this.scriptDriver) { this._dirty = true; return; }
+    for (const joint of this.mechanism.joints.values()) {
+      joint.driven = false;
+      joint.pulled = false;
+    }
+    this.scriptDriver.runOnce();          // script first (forced)
+    for (const d of this.simulator.drivers) {
+      if (d !== this.scriptDriver) d.update(0); // motors hold / stay suppressed
+    }
+    this.solver.solve(this.mechanism);
+    this._dirty = true;
   }
 
   /** Record an undo step + autosave after a committed change. */
@@ -157,37 +242,51 @@ export class App {
 
   // ---- Scene swapping -----------------------------------------------------
 
-  _swapScene(mechanism, drivers, { frame = false } = {}) {
+  _swapScene(mechanism, drivers, { frame = false, script = { source: '', enabled: false }, keepScript = false } = {}) {
     this.mechanism = mechanism;
     this.simulator.mechanism = mechanism;
     this.simulator.drivers = drivers;
     this.simulator.pause();
     this.toolbar.setPlaying(false);
+    // Script is an editor document, not scene geometry: undo/redo (keepScript)
+    // leaves it — and the open editor — untouched. Only explicit scene loads
+    // (preset / import / boot) replace it.
+    if (!keepScript) {
+      this._script = { source: script?.source ?? '', enabled: !!script?.enabled };
+    }
+    this._rebuildScriptDriver(); // rebind to the new mechanism either way
     this._syncMotorConstraints();
+    this._trail?.clear();        // old joints are gone; start the trail fresh
     this.interaction.setMechanism(mechanism);
     this.selection.clear();
     this._linkStart = null;
+    this._railStart = null;
+    this._dragJoint = null;
     this._highlight = null;
     this._highlightSets = emptySets();
     this._hideInspector();
     this.context.hide();
     if (frame) this.resetView();
     this.panel?.refresh();
+    if (!keepScript) this.scriptWindow?.refresh();
     this._dirty = true;
   }
 
   loadPreset(name, { commit = true } = {}) {
-    const factory = MechanismFactory[name] ?? MechanismFactory.fourBar;
-    const { mechanism, motors = [], motor } = factory();
+    const factory = MechanismFactory[name] ?? MechanismFactory.empty;
+    const { mechanism, motors = [], motor, script } = factory();
     const drivers = motors.length ? motors : (motor ? [motor] : []);
-    this._swapScene(mechanism, drivers, { frame: true });
+    this._swapScene(mechanism, drivers, { frame: true, script: script ?? { source: '', enabled: false } });
     if (commit) this.commit();
   }
 
-  /** Restore a serialized snapshot (undo/redo/import). Keeps the view. */
+  /**
+   * Restore a serialized snapshot for undo/redo. Keeps the view AND the script
+   * editor untouched — undo affects the mechanism, not your code.
+   */
   restore(snapshot, { frame = false } = {}) {
     const { mechanism, drivers } = MechanismSerializer.fromObject(snapshot);
-    this._swapScene(mechanism, drivers, { frame });
+    this._swapScene(mechanism, drivers, { frame, keepScript: true });
   }
 
   // ---- Tool / panel -------------------------------------------------------
@@ -195,6 +294,7 @@ export class App {
   setTool(tool) {
     this.tool = tool;
     this._linkStart = null;
+    this._railStart = null;
     this.toolbar.setTool(tool);
     if (this.hintEl) this.hintEl.textContent = HINTS[tool] ?? '';
     this._dirty = true;
@@ -237,12 +337,17 @@ export class App {
     this.panelCollapsed = !this.panelCollapsed;
     this.appEl.classList.toggle('panel-collapsed', this.panelCollapsed);
     this.toolbar.setCollapsed(this.panelCollapsed);
-    // Canvas size changes; re-measure next frame.
-    requestAnimationFrame(() => {
-      const r = this.canvas.getBoundingClientRect();
-      this.renderer.resize(r.width, r.height);
-      this._dirty = true;
-    });
+    // Canvas size changes; re-measure next frame (measure the container, not
+    // the canvas — the canvas carries a fixed pixel width from the last resize).
+    requestAnimationFrame(() => this._resizeToContainer());
+  }
+
+  _resizeToContainer() {
+    const host = this.canvas.parentElement; // .canvas-wrap
+    const r = host.getBoundingClientRect();
+    this.renderer.resize(r.width, r.height);
+    this._dirty = true;
+    return r;
   }
 
   // ---- Selection & inspectors --------------------------------------------
@@ -290,6 +395,71 @@ export class App {
       this.selection.clear();
     }
     this._hideInspector();
+    this._dirty = true;
+  }
+
+  /**
+   * Rail tool: first click picks the rider joint (an existing joint, or a new
+   * one dropped at the click); second click sets the far end and constrains the
+   * rider to that finite rail.
+   */
+  railClick(joint, world) {
+    if (!this._railStart) {
+      const rider = joint ?? this.mechanism.addJoint({ position: new Vector2(world.x, world.y) });
+      this._railStart = { joint: rider, point: rider.position };
+      this.selection.set({ type: 'joint', ref: rider });
+      this._dirty = true;
+      return;
+    }
+    const start = this._railStart.point;
+    const end = new Vector2(world.x, world.y);
+    const len = start.distanceTo(end);
+    const rider = this._railStart.joint;
+    this._railStart = null;
+    if (len < 1) { this._dirty = true; return; } // too short — cancel
+    const dir = end.sub(start).scale(1 / len);
+    rider.position = start.add(dir.scale(len / 2)); // start the rider at the rail's center
+    this.mechanism.addConstraint(new AxisConstraint(rider, start, dir, { length: len }));
+    this._afterStructuralChange();
+  }
+
+  /**
+   * Reshape a rail by moving one of its endpoint handles. The opposite end
+   * stays put; the direction and length are recomputed from the two ends.
+   */
+  setRailEnd(constraint, which, world) {
+    const [s, e] = constraint.trackSegment();
+    const start = which === 'start' ? world : s;
+    const end = which === 'end' ? world : e;
+    const delta = end.sub(start);
+    const len = delta.length;
+    if (len < 1) return; // don't collapse the rail
+    constraint.point = start;
+    constraint.direction = delta.scale(1 / len);
+    constraint.length = len;
+    this._dirty = true;
+  }
+
+  // ---- Joint dragging -----------------------------------------------------
+  //
+  // On each pointer move we set the dragged joint straight to the cursor as a
+  // one-off guess and leave it at full mass. The solver then enforces the rigid
+  // distance/rail constraints with no competing drag force, so links keep their
+  // exact length and the joint snaps to the nearest reachable configuration.
+
+  onDragStart(joint) {
+    this._dragJoint = joint;
+    this._dirty = true;
+  }
+
+  onDragMove(world) {
+    if (this._dragJoint) this._dragJoint.position = new Vector2(world.x, world.y);
+    this._dirty = true;
+  }
+
+  onDragEnd(moved) {
+    this._dragJoint = null;
+    if (moved) this.commit(); // one undo step for the whole drag
     this._dirty = true;
   }
 
@@ -369,6 +539,15 @@ export class App {
           if (!seen.has(other.id)) { seen.add(other.id); out.push(other); }
         }
         return out;
+      },
+      // Every link touching a joint, with the joint at its other end.
+      getLinksAt: (joint) => {
+        const out = [];
+        for (const l of this.mechanism.links) {
+          if (!l.connects(joint)) continue;
+          out.push({ link: l, other: l.jointA === joint ? l.jointB : l.jointA });
+        }
+        return out;
       }
     };
     return ctx;
@@ -431,6 +610,13 @@ export class App {
       items.push({ label: 'Edit…', onClick: () => this._openInspectorFor(item, atPx) });
       items.push({ label: motor ? 'Motor settings…' : 'Make motor…', onClick: () => this._openInspectorFor(item, atPx) });
       items.push({ label: item.ref.fixed ? 'Unground' : 'Ground', onClick: () => this.actions().setJointFixed(item.ref, !item.ref.fixed) });
+      const rail = this.mechanism.constraints.find((c) => c instanceof AxisConstraint && c.joint === item.ref);
+      if (rail) {
+        items.push({ label: 'Remove rail', onClick: () => this.actions().removeRail(item.ref) });
+      } else {
+        items.push({ label: 'Rail: horizontal', onClick: () => this.actions().addRail(item.ref, new Vector2(1, 0)) });
+        items.push({ label: 'Rail: vertical', onClick: () => this.actions().addRail(item.ref, new Vector2(0, 1)) });
+      }
       items.push({ separator: true });
       items.push({ label: 'Delete joint', danger: true, onClick: () => this.deleteSelection() });
     } else if (item.type === 'link') {
@@ -495,6 +681,8 @@ export class App {
     for (const body of [...this.selection.bodies]) this.mechanism.removeRigidBody(body);
     for (const joint of [...this.selection.joints]) {
       this.simulator.removeDriversFor(joint);
+      for (const d of this.simulator.drivers) if (d.reference === joint) d.reference = null;
+      this._trail.delete(joint.id);
       this.mechanism.removeJoint(joint);
     }
     this.selection.clear();
@@ -539,7 +727,7 @@ export class App {
    */
   _syncMotorConstraints() {
     for (const c of this._motorConstraints) this.mechanism.removeConstraint(c);
-    this._motorConstraints = this.simulator.drivers.map((d) => {
+    this._motorConstraints = this._motors().map((d) => {
       const c = new MotorLimitConstraint(d);
       this.mechanism.addConstraint(c);
       return c;
@@ -569,9 +757,50 @@ export class App {
       getJoints: () => this.mechanism.jointList,
       getLinks: () => this.mechanism.links,
       getBodies: () => this.mechanism.rigidBodies,
-      getDrivers: () => this.simulator.drivers,
+      getDrivers: () => this._motors(),
 
       setHighlight: (item) => this.setHighlight(item),
+
+      getScript: () => ({
+        source: this._script.source,
+        enabled: this._script.enabled,
+        error: this.scriptDriver?.error ?? null
+      }),
+      setScript: (source, enabled) => {
+        // The script is not part of undo history; persist it but don't commit.
+        this._script = { source, enabled };
+        this._rebuildScriptDriver();
+        this._autosave();
+        // Preview the result immediately when paused (when running, the loop
+        // already evaluates it every frame).
+        if (!this.simulator.running) this._runScriptOnce();
+        else this._dirty = true;
+      },
+      toggleScriptEnabled: (on) => {
+        this._script.enabled = on;
+        if (this.scriptDriver) {
+          this.scriptDriver.enabled = on;
+          if (on) this.scriptDriver.error = null; // re-arm after a prior error
+        }
+        this._autosave();
+        this._dirty = true;
+      },
+      resetScript: () => {
+        this.scriptDriver?.reset();
+        if (this.scriptDriver && this._script.enabled) this.scriptDriver.enabled = true;
+        if (!this.simulator.running) this._runScriptOnce(); // preview at t = 0
+        else this._dirty = true;
+      },
+
+      isTrailOn: () => this._trailEnabled,
+      setTrail: (on) => {
+        this._trailEnabled = !!on;
+        this._saveTrailPref();
+        if (!this._trailEnabled) this._trail.clear(); // off = stop drawing & recording
+        this._dirty = true;
+      },
+      clearTrail: () => this.clearTrail(),
+
       renameJoint: (joint, name) => { joint.name = name; this._afterStructuralChange(); },
       renameLink: (link, name) => { link.name = name; this._afterStructuralChange(); },
       renameBody: (body, name) => { body.name = name; this._afterStructuralChange(); },
@@ -581,7 +810,12 @@ export class App {
       setBodyColor: (body, hex) => { body.color = hex; this._afterStructuralChange(); },
 
       addJoint: ({ x, y, fixed }) => { this.mechanism.addJoint({ position: new Vector2(x, y), fixed }); this._afterStructuralChange(); },
-      removeJoint: (joint) => { this.simulator.removeDriversFor(joint); this.mechanism.removeJoint(joint); this._afterStructuralChange(); },
+      removeJoint: (joint) => {
+        this.simulator.removeDriversFor(joint);
+        for (const d of this.simulator.drivers) if (d.reference === joint) d.reference = null;
+        this.mechanism.removeJoint(joint);
+        this._afterStructuralChange();
+      },
       setJointPosition: (joint, x, y) => { joint.position = new Vector2(x, y); this._afterEdit(); },
       setJointFixed: (joint, fixed) => { joint.fixed = fixed; this._afterStructuralChange(); },
 
@@ -620,6 +854,17 @@ export class App {
         this._afterStructuralChange();
       },
       removeMotor: (driver) => { this.simulator.removeDriver(driver); this._afterStructuralChange(); },
+
+      addRail: (joint, dir, opts = {}) => {
+        this.mechanism.addConstraint(new AxisConstraint(joint, joint.position, dir, opts));
+        this._afterStructuralChange();
+      },
+      removeRail: (joint) => {
+        for (const c of this.mechanism.constraints.filter((x) => x instanceof AxisConstraint && x.joint === joint)) {
+          this.mechanism.removeConstraint(c);
+        }
+        this._afterStructuralChange();
+      },
       setMotorParams: (motor, partial) => {
         if ('speed' in partial) motor.speedDegPerSec = partial.speed;
         if ('inverted' in partial) motor.inverted = partial.inverted;
@@ -627,6 +872,20 @@ export class App {
         if ('limitDegrees' in partial) motor.limitDegrees = partial.limitDegrees;
         if ('inverted' in partial || 'zeroDegrees' in partial) motor.sync();
         this._afterEdit();
+      },
+      setMotorReference: (motor, jointId) => {
+        motor.reference = jointId ? this.mechanism.getJoint(jointId) : null;
+        motor.sync();
+        this._afterStructuralChange(); // rebuild inspector so the dropdown reflects it
+      },
+      setMotorCrank: (motor, jointId) => {
+        const j = this.mechanism.getJoint(jointId);
+        if (j && j !== motor.pivot) {
+          motor.crank = j;
+          if (motor.reference === j) motor.reference = null; // can't reference the driven link
+          motor.sync();
+        }
+        this._afterStructuralChange();
       }
     };
   }
@@ -671,9 +930,15 @@ export class App {
     const needsSolve = this.simulator.running || this._dirty || this.interaction.draggingJoint;
     if (needsSolve) {
       this.simulator.step(dt);
+      if (this.simulator.running || this.interaction.draggingJoint) this._recordTrail();
       this._render();
       this.panel.tick({ running: this.simulator.running });
-      this.info.update(this.mechanism, this.simulator.drivers);
+      this.info.update(this.mechanism, this._motors());
+      this.scriptWindow?.syncStatus({
+        playing: this.simulator.running,
+        error: this.scriptDriver?.error ?? null,
+        enabled: this._script.enabled
+      });
       this._syncFloatingToJoint();
       this._updateZoomStatus();
       this._dirty = this.simulator.running; // keep rendering while running
@@ -683,12 +948,45 @@ export class App {
 
   _render() {
     this.renderer.render(this.mechanism, {
-      drivers: this.simulator.drivers,
+      drivers: this._motors(),
       highlight: this._highlightSets,
       selection: { joints: this.selection.joints, links: this.selection.links, bodies: this.selection.bodies },
       linkStart: this._linkStart,
-      labels: this.showCanvasLabels
+      labels: this.showCanvasLabels,
+      trail: this._trailEnabled ? this._trail : null,
+      railDraft: (this._railStart && this._pointerWorld)
+        ? { start: this._railStart.point, end: this._pointerWorld }
+        : null
     });
+  }
+
+  /** Append the current position of every moving joint to its trail buffer. */
+  _recordTrail() {
+    if (!this._trailEnabled) return;
+    for (const j of this.mechanism.joints.values()) {
+      if (j.fixed) continue; // grounded joints don't move — skip
+      let arr = this._trail.get(j.id);
+      if (!arr) { arr = []; this._trail.set(j.id, arr); }
+      const last = arr[arr.length - 1];
+      // Skip near-duplicate samples so a resting joint doesn't pile up points.
+      if (last && Math.abs(last.x - j.position.x) < 0.1 && Math.abs(last.y - j.position.y) < 0.1) continue;
+      arr.push(new Vector2(j.position.x, j.position.y));
+      if (arr.length > this._trailMax) arr.shift();
+    }
+  }
+
+  /** Erase all recorded joint trails. */
+  clearTrail() {
+    this._trail.clear();
+    this._dirty = true;
+  }
+
+  _loadTrailPref() {
+    try { return localStorage.getItem('mechsim.trail') === '1'; } catch { return false; }
+  }
+
+  _saveTrailPref() {
+    try { localStorage.setItem('mechsim.trail', this._trailEnabled ? '1' : '0'); } catch { /* ignore */ }
   }
 
   _loadLabelsPref() {
@@ -751,7 +1049,8 @@ export class App {
 
   _installKeyboard() {
     window.addEventListener('keydown', (e) => {
-      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName ?? '');
+      const ae = document.activeElement;
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(ae?.tagName ?? '') || !!ae?.isContentEditable;
       if (typing) return;
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
@@ -767,8 +1066,10 @@ export class App {
       if (e.key === 'v' || e.key === 'V') this.setTool('select');
       else if (e.key === 'j' || e.key === 'J') this.setTool('joint');
       else if (e.key === 'l' || e.key === 'L') this.setTool('link');
+      else if (e.key === 'r' || e.key === 'R') this.setTool('rail');
       else if (e.key === 'g' || e.key === 'G') this.toggleSnap();
-      else if (e.key === 'Escape') { this.selection.clear(); this._linkStart = null; this._hideInspector(); this.context.hide(); this._dirty = true; }
+      else if (e.key === 'k' || e.key === 'K') this.scriptWindow.toggle();
+      else if (e.key === 'Escape') { this.selection.clear(); this._linkStart = null; this._railStart = null; this._hideInspector(); this.context.hide(); this._dirty = true; }
     });
   }
 
@@ -783,8 +1084,9 @@ export class App {
       const reader = new FileReader();
       reader.onload = () => {
         try {
-          const { mechanism, drivers } = MechanismSerializer.fromJSON(String(reader.result));
-          this._swapScene(mechanism, drivers, { frame: true });
+          const { mechanism, drivers, script } = MechanismSerializer.fromJSON(String(reader.result));
+          this._fileName = file.name.replace(/\.(mechsim|json)$/i, '') || this._fileName;
+          this._swapScene(mechanism, drivers, { frame: true, script });
           this.commit();
         } catch (err) {
           alert(`Could not import: ${err.message}`);
@@ -795,13 +1097,24 @@ export class App {
     });
   }
 
-  _export() {
-    const json = MechanismSerializer.toJSON(this.mechanism, this.simulator.drivers);
+  async _export() {
+    const entered = await promptText({
+      title: 'Export MechSim',
+      label: 'File name',
+      value: this._fileName,
+      placeholder: 'scene',
+      okText: 'Export'
+    });
+    if (entered == null) return; // cancelled
+    const name = (entered.trim() || 'scene').replace(/\.(mechsim|json)$/i, '');
+    this._fileName = name;
+
+    const json = MechanismSerializer.toJSON(this.mechanism, this._motors(), { script: this._script });
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'scene.mechsim';
+    a.download = `${name}.mechsim`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -811,10 +1124,8 @@ export class App {
   _installResize() {
     let framedOnce = false;
     const resize = () => {
-      const rect = this.canvas.getBoundingClientRect();
-      this.renderer.resize(rect.width, rect.height);
+      const rect = this._resizeToContainer();
       if (!framedOnce && rect.width > 0 && rect.height > 0) { framedOnce = true; this.resetView(); }
-      this._dirty = true;
     };
     window.addEventListener('resize', resize);
     requestAnimationFrame(resize);

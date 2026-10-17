@@ -52,10 +52,13 @@ export class Simulator {
     // Clear transient driver pins from the previous frame.
     for (const joint of this.mechanism.joints.values()) {
       joint.driven = false;
+      joint.pulled = false;
     }
 
     if (this.running) {
-      for (const driver of this.drivers) {
+      // Run drivers by ascending order (script control before motors).
+      const ordered = [...this.drivers].sort((a, b) => (a.order || 0) - (b.order || 0));
+      for (const driver of ordered) {
         driver.update(dt);
       }
     }

@@ -9,6 +9,9 @@
 export class Driver {
   constructor() {
     this.enabled = true;
+    // Lower runs earlier within a step. Script control runs before motors so
+    // it can suppress a motor's own spin for the frame.
+    this.order = 0;
   }
 
   /**

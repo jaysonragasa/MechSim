@@ -12,6 +12,8 @@ const COLORS = {
   link: '#4ea1ff',
   linkLabel: '#cfe4ff',
   track: '#5a6a86',
+  trail: '#ffce88',
+  railDraft: '#4ea1ff',
   bodyFill: 'rgba(255, 180, 84, 0.14)',
   bodyFillHot: 'rgba(255, 180, 84, 0.3)',
   bodyStroke: 'rgba(255, 180, 84, 0.85)',
@@ -65,7 +67,9 @@ export class CanvasRenderer extends IRenderer {
       highlight = empty,
       selection = empty,
       linkStart = null,
-      labels = false
+      labels = false,
+      trail = null,
+      railDraft = null
     } = viewState;
 
     ctx.save();
@@ -76,6 +80,8 @@ export class CanvasRenderer extends IRenderer {
 
     this._drawGrid();
     this._drawSliderTracks(mechanism);
+    if (trail) this._drawTrails(trail, mechanism);
+    if (railDraft) this._drawRailDraft(railDraft);
     this._drawMotorArcs(drivers);
     this._drawRigidBodies(mechanism, highlight.bodies, selection.bodies);
     this._drawLinks(mechanism, highlight.links, selection.links, labels);
@@ -136,12 +142,35 @@ export class CanvasRenderer extends IRenderer {
     ctx.lineTo(origin.x, this.heightPx);
     ctx.stroke();
 
+    this._drawAxisLabels(origin);
+
     // Axis scale label.
     ctx.fillStyle = COLORS.axisLabel;
     ctx.font = '11px ui-monospace, monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'bottom';
     ctx.fillText(`grid: ${formatMm(step)} / ${formatMm(major)}`, 10, this.heightPx - 10);
+  }
+
+  /** "X (mm) →" / "↑ Y (mm)" markers so the axes read unambiguously. */
+  _drawAxisLabels(origin) {
+    const ctx = this.ctx;
+    const pad = 14;
+    const yOnScreen = Math.max(pad, Math.min(this.heightPx - pad, origin.y));
+    const xOnScreen = Math.max(pad, Math.min(this.widthPx - pad, origin.x));
+
+    ctx.fillStyle = COLORS.axisLabel;
+    ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
+
+    // +X: toward the right edge, along the x-axis.
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('X (mm) →', this.widthPx - 10, yOnScreen - 4);
+
+    // +Y: toward the top edge, along the y-axis (world Y is up).
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('↑ Y (mm)', xOnScreen + 6, 8);
   }
 
   // ---- Slider tracks ------------------------------------------------------
@@ -161,6 +190,98 @@ export class CanvasRenderer extends IRenderer {
       ctx.lineTo(pb.x, pb.y);
       ctx.stroke();
       ctx.setLineDash([]);
+
+      // Finite rails get end caps + draggable endpoint handles.
+      if (c.finite) {
+        this._drawRailCaps(pa, pb, COLORS.track);
+        for (const p of [pa, pb]) {
+          ctx.fillStyle = COLORS.bg;
+          ctx.strokeStyle = COLORS.track;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
+  /** Short perpendicular caps at each end of a rail segment (screen space). */
+  _drawRailCaps(pa, pb, color) {
+    const ctx = this.ctx;
+    const dx = pb.x - pa.x;
+    const dy = pb.y - pa.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len; // perpendicular
+    const ny = dx / len;
+    const cap = 7;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    for (const p of [pa, pb]) {
+      ctx.beginPath();
+      ctx.moveTo(p.x - nx * cap, p.y - ny * cap);
+      ctx.lineTo(p.x + nx * cap, p.y + ny * cap);
+      ctx.stroke();
+    }
+  }
+
+  /** The rubber-band preview while drawing a rail with the Rail tool. */
+  _drawRailDraft(draft) {
+    const ctx = this.ctx;
+    const pa = this.camera.worldToScreen(draft.start);
+    const pb = this.camera.worldToScreen(draft.end);
+    ctx.strokeStyle = COLORS.railDraft;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 5]);
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    this._drawRailCaps(pa, pb, COLORS.railDraft);
+    ctx.fillStyle = COLORS.railDraft;
+    ctx.beginPath();
+    ctx.arc(pa.x, pa.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ---- Motion trails ------------------------------------------------------
+
+  /**
+   * Draw the path each moving joint has traced, as a translucent polyline in
+   * the joint's own color. Fades the tail so recent motion reads brighter.
+   * @param {Map<string, import('../math/Vector2.js').Vector2[]>} trail
+   */
+  _drawTrails(trail, mechanism) {
+    const ctx = this.ctx;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    for (const joint of mechanism.joints.values()) {
+      const pts = trail.get(joint.id);
+      if (!pts || pts.length < 2) continue;
+      const base = joint.color || COLORS.trail;
+
+      // Main faint path.
+      ctx.strokeStyle = hexA(base, 0.35);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const p = this.camera.worldToScreen(pts[i]);
+        if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+
+      // Brighter recent tail (last ~60 samples) so the current sweep stands out.
+      const tailStart = Math.max(0, pts.length - 60);
+      ctx.strokeStyle = hexA(base, 0.85);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = tailStart; i < pts.length; i++) {
+        const p = this.camera.worldToScreen(pts[i]);
+        if (i === tailStart) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
     }
   }
 
@@ -190,13 +311,14 @@ export class CanvasRenderer extends IRenderer {
       // through the travel limit (honoring invert). Sampled in world space so
       // the Y-flip is handled by worldToScreen.
       const dir = d.inverted ? -1 : 1;
+      const zero = d.zeroWorldRad; // includes the parent-link base for serial motors
       const steps = Math.max(10, Math.ceil(d.limitDegrees / 4));
       ctx.strokeStyle = COLORS.motorArc;
       ctx.lineWidth = 2;
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
       for (let i = 0; i <= steps; i++) {
-        const wa = d.zeroRad + dir * (i / steps) * d.limitRad;
+        const wa = zero + dir * (i / steps) * d.limitRad;
         const p = this.camera.worldToScreen(d.pivot.position.add(Vector2.fromAngle(wa, d.radius)));
         if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
       }
@@ -204,8 +326,8 @@ export class CanvasRenderer extends IRenderer {
       ctx.setLineDash([]);
 
       // Boundary markers: where 0° starts and where the limit ends.
-      this._drawMotorBoundary(d, d.zeroRad, '0°', true);
-      this._drawMotorBoundary(d, d.zeroRad + dir * d.limitRad, `${d.limitDegrees}°`, false);
+      this._drawMotorBoundary(d, zero, '0°', true);
+      this._drawMotorBoundary(d, zero + dir * d.limitRad, `${d.limitDegrees}°`, false);
     }
   }
 

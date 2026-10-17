@@ -59,7 +59,7 @@ export const Inspector = {
     wrap.appendChild(el('div', 'menu-sep'));
     const motor = ctx.getMotorFor(joint);
     if (motor) {
-      wrap.appendChild(this._motorControls(motor, actions));
+      wrap.appendChild(this._motorControls(motor, ctx));
     } else {
       const neighbors = ctx.getNeighbors(joint);
       if (neighbors.length) {
@@ -77,9 +77,22 @@ export const Inspector = {
     return wrap;
   },
 
-  _motorControls(motor, actions) {
+  _motorControls(motor, ctx) {
+    const { actions } = ctx;
     const box = el('div');
     box.appendChild(el('div', 'hint', 'Motor'));
+
+    // Which link at the pivot this motor drives (the crank). Lists all links
+    // at the joint by name so you can pick any of them.
+    const driveOpts = ctx.getLinksAt(motor.pivot).map(({ link, other }) => ({
+      label: `${link.name} (${other.name})`,
+      value: other.id
+    }));
+    if (driveOpts.length) {
+      const driveSel = select(driveOpts, motor.crank.id);
+      driveSel.addEventListener('change', () => actions.setMotorCrank(motor, driveSel.value));
+      box.appendChild(row('Drives', driveSel));
+    }
 
     const speed = input('range', { min: -360, max: 360, step: 5, value: motor.speedDegPerSec });
     const speedVal = el('span', 'readout', `${motor.speedDegPerSec}°/s`);
@@ -101,6 +114,19 @@ export const Inspector = {
     const zero = select(ZERO_OPTIONS, String(motor.zeroDegrees));
     zero.addEventListener('change', () => actions.setMotorParams(motor, { zeroDegrees: Number(zero.value) }));
     box.appendChild(row('Zero at', zero));
+
+    // Serial vs. parallel: measure the angle relative to a parent joint (so the
+    // zero rotates with the parent link) or absolute to the world.
+    // Reference options are the links at the pivot, BY LINK NAME — except the
+    // link this motor drives (measuring relative to that is degenerate).
+    const refOpts = [{ label: 'World (fixed)', value: '' }];
+    for (const { link, other } of ctx.getLinksAt(motor.pivot)) {
+      if (other === motor.crank) continue;
+      refOpts.push({ label: `${link.name} (${other.name})`, value: other.id });
+    }
+    const refSel = select(refOpts, motor.reference ? motor.reference.id : '');
+    refSel.addEventListener('change', () => actions.setMotorReference(motor, refSel.value || null));
+    box.appendChild(row('Relative to', refSel));
 
     const limit = select(LIMIT_OPTIONS, String(motor.limitDegrees));
     limit.addEventListener('change', () => actions.setMotorParams(motor, { limitDegrees: Number(limit.value) }));
