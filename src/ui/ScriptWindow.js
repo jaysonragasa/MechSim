@@ -73,6 +73,8 @@ export class ScriptWindow {
     this.jar = null;
     this._open = false;
     this._geo = this._loadGeo();
+    this.helpWin = null;             // separate, draggable guide window
+    this._helpGeo = this._loadHelpGeo();
   }
 
   get isOpen() { return this._open; }
@@ -92,6 +94,11 @@ export class ScriptWindow {
   close() {
     this._syncGeoFromEl();
     if (this.el) this.el.hidden = true;
+    // Closing the editor also dismisses its guide window.
+    if (this.helpWin && !this.helpWin.hidden) {
+      this.helpWin.hidden = true;
+      if (this.helpBtn) this.helpBtn.textContent = '? Help';
+    }
     this._open = false;
     this._persist();
     this.actions.onOpenChanged?.(false);
@@ -137,10 +144,7 @@ export class ScriptWindow {
 
     const editorWrap = el('div', 'sw-editor');
     this.codeEl = el('div', 'sw-code language-js');
-    this.helpEl = el('div', 'sw-help');
-    this.helpEl.hidden = true;
-    this.helpEl.innerHTML = HELP_HTML;
-    editorWrap.append(this.codeEl, this.helpEl);
+    editorWrap.appendChild(this.codeEl);
 
     this.status = el('div', 'sw-status');
 
@@ -150,7 +154,7 @@ export class ScriptWindow {
 
     this.jar = CodeJar(this.codeEl, (e) => Prism.highlightElement(e), { tab: '  ' });
 
-    this._installDrag(title);
+    this._installDrag(title, win, () => { this._syncGeoFromEl(); this._persist(); });
     this._ro = new ResizeObserver(() => { this._syncGeoFromEl(); this._persist(); });
     this._ro.observe(win);
   }
@@ -160,14 +164,60 @@ export class ScriptWindow {
     this.actions.setScript?.(code, this.enable.checked);
   }
 
-  /** Toggle the scripting guide over the editor. */
+  /** Open/close the scripting guide as its own floating window. */
   _toggleHelp() {
-    if (!this.helpEl) return;
-    const show = this.helpEl.hidden;
-    this.helpEl.hidden = !show;
-    this.codeEl.style.display = show ? 'none' : '';
+    if (!this.helpWin) this._buildHelpWindow();
+    const show = this.helpWin.hidden;
+    this.helpWin.hidden = !show;
     this.helpBtn.textContent = show ? '✕ Help' : '? Help';
-    if (show) this.helpEl.scrollTop = 0;
+  }
+
+  _buildHelpWindow() {
+    const win = el('div', 'script-window help-window');
+    win.hidden = true;
+    win.style.left = `${this._helpGeo.x}px`;
+    win.style.top = `${this._helpGeo.y}px`;
+    win.style.width = `${this._helpGeo.w}px`;
+    win.style.height = `${this._helpGeo.h}px`;
+
+    const title = el('div', 'sw-title');
+    title.append(el('span', 'sw-name', 'Scripting Guide'));
+    const btns = el('div', 'sw-btns');
+    btns.append(btn('✕', () => this._toggleHelp(), 'close'));
+    title.append(btns);
+
+    const body = el('div', 'sw-help');
+    body.innerHTML = HELP_HTML;
+
+    win.append(title, body);
+    document.body.appendChild(win);
+    this.helpWin = win;
+
+    this._installDrag(title, win, () => this._persistHelp());
+    this._helpRo = new ResizeObserver(() => this._persistHelp());
+    this._helpRo.observe(win);
+  }
+
+  _persistHelp() {
+    if (!this.helpWin || this.helpWin.hidden) return;
+    const r = this.helpWin.getBoundingClientRect();
+    this._helpGeo = { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+    try { localStorage.setItem('mechsim.helpWindow', JSON.stringify(this._helpGeo)); } catch { /* ignore */ }
+  }
+
+  _loadHelpGeo() {
+    const def = { x: 546, y: 96, w: 340, h: 380 };
+    try {
+      const g = JSON.parse(localStorage.getItem('mechsim.helpWindow') ?? '');
+      return {
+        x: Number.isFinite(g.x) ? g.x : def.x,
+        y: Number.isFinite(g.y) ? g.y : def.y,
+        w: Number.isFinite(g.w) ? g.w : def.w,
+        h: Number.isFinite(g.h) ? g.h : def.h
+      };
+    } catch {
+      return def;
+    }
   }
 
   // ---- Sync ----------------------------------------------------------------
@@ -197,7 +247,7 @@ export class ScriptWindow {
 
   // ---- Drag / geometry -----------------------------------------------------
 
-  _installDrag(handle) {
+  _installDrag(handle, target, onEnd) {
     // Claim touch gestures on the title bar so a finger-drag moves the window
     // instead of the browser treating it as a page scroll (which cancels it).
     handle.style.touchAction = 'none';
@@ -207,22 +257,21 @@ export class ScriptWindow {
       dragging = true;
       handle.setPointerCapture(e.pointerId);
       sx = e.clientX; sy = e.clientY;
-      const r = this.el.getBoundingClientRect();
+      const r = target.getBoundingClientRect();
       ox = r.left; oy = r.top;
     });
     handle.addEventListener('pointermove', (e) => {
       if (!dragging) return;
       const x = clamp(ox + (e.clientX - sx), 0, window.innerWidth - 80);
       const y = clamp(oy + (e.clientY - sy), 0, window.innerHeight - 40);
-      this.el.style.left = `${x}px`;
-      this.el.style.top = `${y}px`;
+      target.style.left = `${x}px`;
+      target.style.top = `${y}px`;
     });
     const end = (e) => {
       if (!dragging) return;
       dragging = false;
       try { handle.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-      this._syncGeoFromEl();
-      this._persist();
+      onEnd?.();
     };
     handle.addEventListener('pointerup', end);
     handle.addEventListener('pointercancel', end);

@@ -515,8 +515,15 @@ input.name-input:focus {
 }
 .sw-status.err { color: var(--danger); }
 
-/* Scripting guide (Help) — overlays the editor area */
-.sw-help { padding: 10px 14px 16px; color: var(--text); font-size: 12px; line-height: 1.5; }
+/* Scripting guide (Help) — its own floating window body */
+.sw-help {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 10px 14px 16px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
 .sw-help h4 {
   margin: 14px 0 6px;
   font-size: 11px;
