@@ -6,6 +6,53 @@ import 'prismjs/themes/prism-tomorrow.css';
 
 const GEO_KEY = 'mechsim.scriptWindow';
 
+/** The scripting guide shown by the Help button (static, trusted markup). */
+const HELP_HTML = `
+<h4>How scripting works</h4>
+<p>Your code runs once every animation frame. You're given <code>t</code> (seconds since Reset) and <code>m</code> (the control API). No loop needed — just compute a pose and command it.</p>
+
+<h4>Drive motors</h4>
+<ul>
+<li><code>m.setMotor(name, deg)</code> — set a servo to <code>deg</code>° from its zero. Auto-clamped to the motor's limit.</li>
+<li><code>m.angle(name)</code> — the motor's current angle (degrees).</li>
+<li><code>m.motorLimit(name)</code> — the motor's travel limit (degrees).</li>
+<li><code>m.motor(name).angle</code> — same value as a getter/setter.</li>
+</ul>
+<p>Motors are addressed by their <b>crank</b> or <b>pivot</b> joint — by name or id.</p>
+<pre><code>m.setMotor('Hip', 30 * Math.sin(t));</code></pre>
+
+<h4>Inverse kinematics</h4>
+<ul>
+<li><code>m.target(name, x, y)</code> — pull a joint toward (x, y) in mm; the solver resolves the rest of the chain. Works on a free joint (one not pinned by a motor).</li>
+</ul>
+<pre><code>m.target('Feet', 20 * Math.cos(t), -100);</code></pre>
+
+<h4>Read the scene (live)</h4>
+<ul>
+<li><code>m.getJoint(name)</code> &rarr; <code>{ id, name, x, y, fixed, color }</code></li>
+<li><code>m.getLink(name)</code> &rarr; <code>{ a, b, aName, bName, length, currentLength, ax, ay, bx, by }</code></li>
+<li><code>m.getMotor(name)</code> &rarr; <code>{ pivot, crank, pivotName, crankName, inverted, zeroDegrees, limitDegrees, angle }</code></li>
+<li><code>m.pos(name)</code> &rarr; <code>{ x, y }</code> of a joint.</li>
+</ul>
+<p>Reading live lets a gait adapt to the real geometry instead of hardcoding coordinates.</p>
+
+<h4>Remember across frames</h4>
+<p><code>m.state</code> is an object that survives between frames (cleared when you press Apply). Capture fixed geometry once:</p>
+<pre><code>if (!m.state.ok) {
+  m.state.home = m.getJoint('Feet');
+  m.state.ok = true;
+}</code></pre>
+
+<h4>Buttons</h4>
+<ul>
+<li><b>Apply</b> — compile your code (also clears <code>m.state</code>).</li>
+<li><b>Run / Pause</b> — start or stop the simulation.</li>
+<li><b>&#8635; t</b> — reset time <code>t</code> to 0.</li>
+<li><b>On</b> — enable this script as the active driver.</li>
+<li><b>Trail</b> — draw the path each joint traces.</li>
+</ul>
+`;
+
 /**
  * A draggable, resizable in-app window hosting a lightweight syntax-highlighted
  * JS editor (CodeJar + Prism) for the ScriptDriver. It carries its own Run/
@@ -82,13 +129,18 @@ export class ScriptWindow {
     this.clearTrailBtn = btn('Clear', () => this.actions.clearTrail?.());
     this.clearTrailBtn.title = 'Erase the recorded joint trails';
 
+    this.helpBtn = btn('? Help', () => this._toggleHelp());
+    this.helpBtn.title = 'Show the scripting guide';
     this.closeBtn = btn('✕', () => this.close(), 'close');
-    btns.append(this.runBtn, this.applyBtn, this.resetBtn, enableWrap, trailWrap, this.clearTrailBtn, this.closeBtn);
+    btns.append(this.runBtn, this.applyBtn, this.resetBtn, enableWrap, trailWrap, this.clearTrailBtn, this.helpBtn, this.closeBtn);
     title.append(label, btns);
 
     const editorWrap = el('div', 'sw-editor');
     this.codeEl = el('div', 'sw-code language-js');
-    editorWrap.appendChild(this.codeEl);
+    this.helpEl = el('div', 'sw-help');
+    this.helpEl.hidden = true;
+    this.helpEl.innerHTML = HELP_HTML;
+    editorWrap.append(this.codeEl, this.helpEl);
 
     this.status = el('div', 'sw-status');
 
@@ -106,6 +158,16 @@ export class ScriptWindow {
   _apply() {
     const code = this.jar ? this.jar.toString() : '';
     this.actions.setScript?.(code, this.enable.checked);
+  }
+
+  /** Toggle the scripting guide over the editor. */
+  _toggleHelp() {
+    if (!this.helpEl) return;
+    const show = this.helpEl.hidden;
+    this.helpEl.hidden = !show;
+    this.codeEl.style.display = show ? 'none' : '';
+    this.helpBtn.textContent = show ? '✕ Help' : '? Help';
+    if (show) this.helpEl.scrollTop = 0;
   }
 
   // ---- Sync ----------------------------------------------------------------

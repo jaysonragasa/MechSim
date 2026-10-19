@@ -515,6 +515,39 @@ input.name-input:focus {
 }
 .sw-status.err { color: var(--danger); }
 
+/* Scripting guide (Help) — overlays the editor area */
+.sw-help { padding: 10px 14px 16px; color: var(--text); font-size: 12px; line-height: 1.5; }
+.sw-help h4 {
+  margin: 14px 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--accent);
+}
+.sw-help h4:first-child { margin-top: 0; }
+.sw-help p { margin: 6px 0; color: var(--text-dim); }
+.sw-help ul { margin: 6px 0; padding-left: 18px; }
+.sw-help li { margin: 3px 0; color: var(--text-dim); }
+.sw-help b { color: var(--text); font-weight: 600; }
+.sw-help code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 4px;
+  color: #e6edf3;
+}
+.sw-help pre {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: auto;
+}
+.sw-help pre code { background: none; border: none; padding: 0; }
+
 /* ===== Modal (prompt dialog) ===== */
 .modal-backdrop {
   position: fixed;
